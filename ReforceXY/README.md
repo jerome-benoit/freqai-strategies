@@ -55,10 +55,11 @@ dependency versions for reproducible evaluations.
 | Short_exit       | 4     | Short exit.                                              |
 
 `do_predict=0` does not generate these ordinary signals. On the final candle,
-`do_predict=2` (expired model) requests exits for the pair's open positions,
-independently of the predicted action. Freqtrade capacity, protections, order
-handling and exchange execution still determine whether an order is placed or
-filled.
+`do_predict=2` (expired model) requests exits only for the current pair's open
+positions, using each position's side independently of the predicted action.
+Other pairs cannot generate its exit signals. Freqtrade capacity, protections,
+order handling and exchange execution still determine whether an order is
+placed or filled.
 
 Only MaskablePPO supports action masking in this integration.
 `inference_masking=false` disables its prediction-time mask, not its training
@@ -206,6 +207,16 @@ final policy is used. Interrupted fits are logged and follow the same checkpoint
 selection. Compatible prior best parameters can be reused after an unsuccessful
 search; absent those, effective plain model parameters remain the fallback.
 
+An absent configured `gamma` uses the canonical discount. The effective discount
+must be a finite Python/NumPy integer or floating scalar in `[0, 1]`, normalized
+to a Python float. Null, booleans, strings, complex values and arrays are rejected
+before constructing or replacing environments. Validation follows HPO overrides
+and the resumed learner's gamma, so a valid higher-priority value can supersede
+an invalid base value. A persisted learner with missing or invalid gamma cannot
+continue training. Learner and environment use the same effective discount.
+Incompatible reward-objective identities reset persisted HPO studies and cause
+stale best-parameter payloads to be ignored rather than warm-started.
+
 ## Continual learning
 
 Continuation requires `freqai.continual_learning=true` and effective
@@ -217,11 +228,13 @@ inference is not the same as continuing its training.
 Continual learning trains an independent copy of the deployed policy with its
 fitted feature pipeline. DQN/QRDQN deployments each persist their replay buffer;
 it is loaded only when continual training starts. Missing or incompatible replay
-data prevents continuation but does not prevent inference. Reset trained models
-or use a new `freqai.identifier` to migrate incompatible artifacts, including
-deployments without the chronological training marker. Training disables
-`shuffle_after_split`. HPO studies and saved best parameters are reused only
-when their objective identity matches.
+data prevents continuation but does not prevent inference. The deployment
+generation covers frozen feature coordinates and PBRS reward semantics. Otherwise
+compatible older generations, including `chronological-frozen-pipelines-v2`, support
+inference but cannot continue training. Reset trained models or use a new
+`freqai.identifier` to migrate. Training disables `shuffle_after_split`. HPO
+studies and saved best parameters are reused only when their objective identity
+matches.
 
 Backtests continue only from a saved policy whose training cutoff precedes
 the current window's end and its last available candle boundary. A later
@@ -345,7 +358,7 @@ Moving base images can change them; record the runtime version.
 | -------------------------------------------------------------- | -------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- | -------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | freqai.model_training_parameters                               | {} native                                                                                    | Dictionary                                                                                           | device:auto, verbose:1                             | Deep-copied then normalized; remaining kwargs forwarded to chosen SB3 constructor. This is SDK boundary, not an app-owned exhaustive hyperparameter schema.                                         |
 | freqai.model_training_parameters.seed                          | 42                                                                                           | Integer intended; SDK validation                                                                     | Omitted                                            | Local seed default; envs derive seeds and HPO increments by trial number.                                                                                                                           |
-| freqai.model_training_parameters.gamma                         | 0.95                                                                                         | Numeric SDK discount; no local app range validation                                                  | Omitted                                            | Local default; propagated to environment potential_gamma. Resumed learner keeps its own gamma.                                                                                                      |
+| freqai.model_training_parameters.gamma | 0.95 | Finite Python/NumPy integer or floating scalar in [0,1]; null, bool, string, complex and arrays rejected | Omitted | Effective value is validated after HPO/resumed-learner precedence and propagated to environment potential_gamma. Invalid persisted gamma blocks continuation. |
 | freqai.model_training_parameters.learning_rate                 | SDK default unless lr_schedule=true; then initial 0.0003 if omitted                          | SDK numeric/schedule; app wraps numeric only                                                         | Omitted                                            | Do not call 0.0003 an unconditional app default.                                                                                                                                                    |
 | freqai.model_training_parameters.clip_range                    | SDK default unless PPO-family cr_schedule=true; then initial 0.2 if omitted                  | SDK numeric/schedule; app wraps numeric only                                                         | Omitted                                            | Only PPO family schedule conversion.                                                                                                                                                                |
 | freqai.model_training_parameters.gpu_memory_fraction           | null/omitted disables                                                                        | Numeric in (0,1] intended; ignored invalid bounds/no CUDA, not robust type validation                | Omitted                                            | App-only; applies torch CUDA per-process limit to device 0, removed before SDK constructor.                                                                                                         |
@@ -391,8 +404,9 @@ Non-positive or non-finite equity produces NaN diagnostics rather than a zero
 return. These diagnostics do not change the training reward or realized capital.
 Rewards combine the fill-time base components with a potential-based shaping
 delta over the returned next observation. Termination liquidates any remaining
-position once and clears the terminal potential. `get_env_history()` returns one
-metrics/price row per transition. Its `execution_tick` is the transition/action/fill
+position once and sets terminal shaping to `-prev_potential`, even for tiny
+nonzero potentials. `get_env_history()` returns one metrics/price row per transition.
+Its `execution_tick` is the transition/action/fill
 key before the tick increment; its `tick` is the returned post-increment price and
 observation row (normally `execution_tick + 1`). Exit-efficiency extrema include
 the fee-adjusted PnL at entry and subsequent retained market marks. Ordered
@@ -400,3 +414,11 @@ trade events remain separate in `trade_history`: their tick identifies the
 candle whose price filled the event. Action fills use `execution_tick`;
 terminal liquidations use the returned post-increment tick. `terminal_liquidation`
 and `exit_pnl` remain on the transition history row.
+
+Every enabled PBRS transition, including neutral steps with retained potential,
+uses `gamma * next_potential - prev_potential`. Both `canonical` and
+`non_canonical` have zero exit potential; the latter permits optional additives.
+The `pbrs_invariant` diagnostic recognizes either zero-exit mode when both
+effective additives are disabled. It is a conservative configuration check, not
+a guarantee about fitted policies: theoretical invariance also requires an
+observable state potential, the learner's discount, and appropriate boundaries.

@@ -3,7 +3,6 @@
 import copy
 import math
 import tempfile
-import unittest
 from datetime import datetime as dt
 from datetime import timedelta, timezone
 from pathlib import Path
@@ -12,9 +11,9 @@ from unittest import mock
 
 import numpy as np
 import pandas as pd
-from freqtrade.enums import RunMode
 from freqtrade.freqai.data_drawer import FreqaiDataDrawer
 from freqtrade.freqai.data_kitchen import FreqaiDataKitchen
+from qa_support import QaTestCase, RecordingPolicy, model_config
 from sb3_contrib import MaskablePPO
 
 from ReforceXY.user_data.freqaimodels.ReforceXY import (
@@ -24,141 +23,22 @@ from ReforceXY.user_data.freqaimodels.ReforceXY import (
     convert_optuna_params_to_model_params,
     deepmerge,
 )
-from ReforceXY.user_data.strategies.RLAgentStrategy import RLAgentStrategy
 
 
-class RecordingPolicy:
-    def __init__(self):
-        self.observations = []
-        self.masks = []
-
-    def predict(self, observation, **kwargs):
-        self.observations.append(observation.copy())
-        self.masks.append(kwargs.get("action_masks"))
-        return np.array([0]), None
-
-
-def model_config(path):
-    return {
-        "user_data_dir": Path(path),
-        "timeframe": "5m",
-        "stake_amount": "unlimited",
-        "runmode": RunMode.DRY_RUN,
-        "exchange": {"pair_whitelist": ["BTC/USDT"]},
-        "freqai": {
-            "enabled": True,
-            "identifier": "contract-test",
-            "train_period_days": 1,
-            "backtest_period_days": 1,
-            "conv_width": 1,
-            "activate_tensorboard": False,
-            "feature_parameters": {
-                "include_timeframes": ["5m"],
-                "include_corr_pairlist": [],
-                "label_period_candles": 1,
-                "principal_component_analysis": False,
-                "noise_standard_deviation": 0,
-                "buffer_train_data_candles": 0,
-                "shuffle_after_split": False,
-            },
-            "data_split_parameters": {"test_size": 0.25, "shuffle": False},
-            "model_training_parameters": {
-                "n_steps": 8,
-                "batch_size": 8,
-                "n_epochs": 1,
-                "device": "cpu",
-                "policy_kwargs": {"net_arch": [8]},
-            },
-            "rl_config": {
-                "model_type": "MaskablePPO",
-                "policy_type": "MlpPolicy",
-                "cpu_count": 1,
-                "drop_ohlc_from_features": False,
-                "model_reward_parameters": {"rr": 2.0, "profit_aim": 0.03},
-                "train_cycles": 1,
-                "n_envs": 1,
-                "n_eval_envs": 1,
-                "n_eval_steps": 16,
-                "n_eval_episodes": 1,
-                "check_envs": False,
-                "add_state_info": False,
-            },
-        },
-    }
-
-
-class ReviewContractsTest(unittest.TestCase):
-    def model(self, *, hold=False, hpo=False):
+class ReviewContractsTest(QaTestCase):
+    def model(self, *, hold=False):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         config = model_config(temp.name)
         config["freqai"]["rl_config"]["model_reward_parameters"]["hold_potential_enabled"] = hold
-        config["freqai"]["continual_learning"] = hpo
-        config["freqai"]["rl_config_optuna"] = {"enabled": hpo}
+        config["freqai"]["continual_learning"] = False
+        config["freqai"]["rl_config_optuna"] = {"enabled": False}
         model = ReforceXY(config=config)
         model.live = True
         model.can_short = True
         model.get_state_info = lambda pair: (1.0, 0.05, 12)
         self.addCleanup(model.close_envs)
         return model
-
-    def test_strategy_leverage_respects_pair_bounds_and_invalid_config(self):
-        """A strategy callback always returns a finite leverage inside pair limits."""
-        strategy = RLAgentStrategy.__new__(RLAgentStrategy)
-        arguments = {
-            "pair": "BTC/USDT",
-            "current_time": dt(2026, 1, 1, tzinfo=timezone.utc),
-            "current_rate": 100.0,
-            "proposed_leverage": 2.0,
-            "max_leverage": 5.0,
-            "entry_tag": None,
-            "side": "long",
-        }
-        for configured, expected in (
-            (None, 2.0),
-            (0.5, 1.0),
-            (10.0, 5.0),
-            (3.0, 3.0),
-            (float("nan"), 2.0),
-            (float("inf"), 2.0),
-            (10**500, 2.0),
-            (-5.0, 1.0),
-            ("invalid", 2.0),
-            (True, 2.0),
-        ):
-            with self.subTest(configured=configured):
-                strategy.config = {} if configured is None else {"leverage": configured}
-                self.assertEqual(strategy.leverage(**arguments), expected)
-
-    def test_strategy_leverage_warnings_follow_invalid_config_transitions(self):
-        """Warn once per invalid setting, including values below the leverage floor."""
-        strategy = RLAgentStrategy.__new__(RLAgentStrategy)
-        arguments = {
-            "pair": "BTC/USDT",
-            "current_time": dt(2026, 1, 1, tzinfo=timezone.utc),
-            "current_rate": 100.0,
-            "proposed_leverage": 2.0,
-            "max_leverage": 5.0,
-            "entry_tag": None,
-            "side": "long",
-        }
-        strategy.config = {"leverage": float("nan")}
-        with self.assertLogs(RLAgentStrategy.__module__, level="WARNING") as logs:
-            for _ in range(3):
-                self.assertEqual(strategy.leverage(**arguments), 2.0)
-            self.assertEqual(len(logs.records), 1)
-            strategy.config["leverage"] = float("inf")
-            self.assertEqual(strategy.leverage(**arguments), 2.0)
-            self.assertEqual(len(logs.records), 2)
-            strategy.config["leverage"] = 0.5
-            for _ in range(2):
-                self.assertEqual(strategy.leverage(**arguments), 1.0)
-            self.assertEqual(len(logs.records), 3)
-            strategy.config["leverage"] = 2.5
-            self.assertEqual(strategy.leverage(**arguments), 2.5)
-            strategy.config["leverage"] = float("nan")
-            self.assertEqual(strategy.leverage(**arguments), 2.0)
-            self.assertEqual(len(logs.records), 4)
 
     def test_training_preserves_raw_prices_and_returns_best_checkpoint(self):
         for drop in (False, True):
@@ -738,24 +618,6 @@ class ReviewContractsTest(unittest.TestCase):
         self.assertFalse(truncated)
         self.assertEqual(env._current_tick, 6)
         self.assertEqual(info["next_potential"], 0.0)
-
-    def test_pbrs_history_preserves_verifier_precision(self):
-        model = self.model(hold=True)
-        model.CONV_WIDTH = 2
-        features = pd.DataFrame({"f": np.arange(5, dtype=float)})
-        prices = pd.DataFrame({"open": np.full(5, 100.0)})
-        env = MyRLEnv(df=features, prices=prices, **model.pack_env_dict("BTC/USDT"))
-        env.fee = 0.0
-        self.addCleanup(env.close)
-        env.reset()
-
-        with mock.patch.object(env, "_compute_hold_potential", return_value=0.123456):
-            env.step(Actions.Long_enter.value)
-
-        row = env.get_env_history().iloc[-1]
-        expected_shaping = env._potential_gamma * row["next_potential"] - row["prev_potential"]
-        self.assertLessEqual(abs(row["reward_shaping"] - expected_shaping), 1e-6)
-        self.assertEqual(row["next_potential"], 0.123456)
 
     def test_state_info_normalizes_leveraged_profit_ratio(self):
         trade = SimpleNamespace(

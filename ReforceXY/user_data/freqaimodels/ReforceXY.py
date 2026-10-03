@@ -433,9 +433,10 @@ class ReforceXY(BaseReinforcementLearningModel):
     _LOG_2: Final[float] = math.log(2.0)
 
     _DEPLOYMENT_COORDINATE_MARKER_KEY: Final[str] = "reforcexy_deployment_coordinates"
-    _DEPLOYMENT_COORDINATE_GENERATION: Final[str] = "chronological-frozen-pipelines-v2"
+    _DEPLOYMENT_COORDINATE_GENERATION: Final[str] = "chronological-frozen-pipelines-pbrs-v3"
 
     DEFAULT_BASE_FACTOR: Final[float] = 100.0
+    DEFAULT_DISCOUNT_GAMMA: Final[float] = 0.95
 
     DEFAULT_MAX_TRADE_DURATION_CANDLES: Final[int] = 128
     DEFAULT_IDLE_DURATION_MULTIPLIER: Final[int] = 4
@@ -548,7 +549,7 @@ class ReforceXY(BaseReinforcementLearningModel):
     _BEST_PARAMS_LOCK_FILENAME: Final[str] = ".hyperopt-best-params.lock"
     # Bump on objective changes that make persisted trials or best params incompatible.
     _OPTUNA_OBJECTIVE_IDENTITY: Final[str] = (
-        "terminal-liquidation-risk-normalized-trained-policy-v3"
+        "terminal-liquidation-risk-normalized-trained-policy-v5"
     )
     _PPO_N_STEPS: Final[tuple[int, ...]] = (512, 1024, 2048, 4096)
     _PPO_N_STEPS_MIN: Final[int] = min(_PPO_N_STEPS)
@@ -937,6 +938,8 @@ class ReforceXY(BaseReinforcementLearningModel):
                 f"Config [{pair}]: backtesting does not support hold_potential_enabled=True "
                 "because add_state_info is unavailable"
             )
+        effective_params = self.get_model_params() if model_params is None else model_params
+        gamma = ReforceXY._resolve_discount_gamma(effective_params)
         env_info = super().pack_env_dict(pair)
         # Each environment owns its effective parameters; do not mutate global config.
         config = copy.deepcopy(env_info["config"])
@@ -944,15 +947,26 @@ class ReforceXY(BaseReinforcementLearningModel):
         model_reward_parameters = config["freqai"]["rl_config"].setdefault(
             "model_reward_parameters", {}
         )
-        effective_params = self.get_model_params() if model_params is None else model_params
-        gamma = effective_params.get("gamma")
-
-        if gamma is not None:
-            model_reward_parameters["potential_gamma"] = gamma
-        else:
-            logger.warning("Env [%s]: no valid discount gamma resolved for environment", pair)
-
+        model_reward_parameters["potential_gamma"] = gamma
         return env_info
+
+    @staticmethod
+    def _resolve_discount_gamma(model_params: Mapping[str, Any]) -> float:
+        """Validate the winning Python/NumPy real scalar discount and normalize to float."""
+        gamma = model_params.get("gamma", ReforceXY.DEFAULT_DISCOUNT_GAMMA)
+        if gamma is None:
+            raise ValueError(
+                "Config [global]: effective model_training_parameters.gamma must not be null"
+            )
+        if (
+            isinstance(gamma, (bool, np.bool_))
+            or not isinstance(gamma, (int, float, np.integer, np.floating))
+            or not 0 <= gamma <= 1
+        ):
+            raise ValueError(
+                "Config [global]: effective discount gamma must be a finite real scalar in [0, 1]"
+            )
+        return float(gamma)
 
     def set_train_and_eval_environments(
         self,
@@ -965,6 +979,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         """
         Set training and evaluation environments
         """
+        env_dict = self.pack_env_dict(dk.pair, model_params)
         data_dictionary["train_prices"] = prices_train
         data_dictionary["test_prices"] = prices_test
         if self.train_env is not None or self.eval_env is not None:
@@ -973,7 +988,6 @@ class ReforceXY(BaseReinforcementLearningModel):
 
         train_df = data_dictionary["train_features"]
         test_df = data_dictionary["test_features"]
-        env_dict = self.pack_env_dict(dk.pair, model_params)
         effective_params = self.get_model_params() if model_params is None else model_params
         seed = effective_params.get("seed", 42)
 
@@ -1029,7 +1043,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         model_params: dict[str, Any] = copy.deepcopy(self.model_training_parameters)
 
         model_params.setdefault("seed", 42)
-        model_params.setdefault("gamma", 0.95)
+        model_params.setdefault("gamma", ReforceXY.DEFAULT_DISCOUNT_GAMMA)
 
         if not self.hyperopt and self.lr_schedule:
             lr = model_params.get("learning_rate", 0.0003)
@@ -1309,6 +1323,7 @@ class ReforceXY(BaseReinforcementLearningModel):
             cached = self.dd.meta_data_dictionary.get(pair, {})
             metadata = cached.get(METADATA)
             feature_pipeline = cached.get(FEATURE_PIPELINE)
+            prefix: Path | None = None
             if model is None or metadata is None or feature_pipeline is None:
                 # The current kitchen points to the new window, not deployed files.
                 previous_dk = copy.copy(dk)
@@ -1318,21 +1333,23 @@ class ReforceXY(BaseReinforcementLearningModel):
                 if metadata is None:
                     with Path(f"{prefix}_{METADATA}.json").open("r") as fp:
                         metadata = rapidjson.load(fp, number_mode=METADATA_NUMBER_MODE)
-                if feature_pipeline is None:
-                    with Path(f"{prefix}_{FEATURE_PIPELINE}.pkl").open("rb") as fp:
-                        feature_pipeline = cloudpickle.load(fp)
-                if model is None:
-                    model = self.MODELCLASS.load(Path(f"{prefix}_model"))
-                    self._restore_replay(model, metadata, previous_dk.data_path, pair)
             if (
                 metadata.get(self._DEPLOYMENT_COORDINATE_MARKER_KEY)
                 != self._DEPLOYMENT_COORDINATE_GENERATION
             ):
                 raise ValueError(
-                    "persisted deployment coordinate generation is missing or incompatible"
+                    "persisted deployment coordinate/reward generation is missing or incompatible"
                 )
+            if feature_pipeline is None:
+                assert prefix is not None
+                with Path(f"{prefix}_{FEATURE_PIPELINE}.pkl").open("rb") as fp:
+                    feature_pipeline = cloudpickle.load(fp)
+            if model is None:
+                assert prefix is not None
+                model = self.MODELCLASS.load(Path(f"{prefix}_model"))
             if not isinstance(model, self.MODELCLASS):
                 raise ValueError("persisted policy type differs from the configured model")
+            ReforceXY._resolve_discount_gamma({"gamma": getattr(model, "gamma", None)})
             for name, expected, actual in (
                 ("features", dk.training_features_list, metadata["training_features_list"]),
                 ("labels", dk.label_list, metadata["label_list"]),
@@ -1344,6 +1361,8 @@ class ReforceXY(BaseReinforcementLearningModel):
             ):
                 if list(expected) != list(actual):
                     raise ValueError(f"persisted {name} differ in names or order")
+            if cached_model is None:
+                self._restore_replay(model, metadata, Path(previous["data_path"]), pair)
             if cached_model is not None:
                 # SB3 archives preserve policy/optimizer state but exclude envs and loggers.
                 with BytesIO() as archive:
@@ -1564,9 +1583,8 @@ class ReforceXY(BaseReinforcementLearningModel):
         model = deployment_state[0] if deployment_state is not None else None
         effective_params = dict(model_params)
         if model is not None:
-            learner_gamma = getattr(model, "gamma", None)
-            if isinstance(learner_gamma, (int, float)) and np.isfinite(learner_gamma):
-                effective_params["gamma"] = float(learner_gamma)
+            effective_params["gamma"] = getattr(model, "gamma", None)
+        effective_params["gamma"] = ReforceXY._resolve_discount_gamma(effective_params)
         # Preserve raw prices and the resumed learner's discount in its environments.
         try:
             self.set_train_and_eval_environments(
@@ -1585,11 +1603,11 @@ class ReforceXY(BaseReinforcementLearningModel):
                     self.policy_type,
                     self.train_env,
                     tensorboard_log=tensorboard_log_path,
-                    **model_params,
+                    **effective_params,
                 )
             total_timesteps = self._align_model_budget(model, total_timesteps)
 
-            eval_freq = self.get_eval_freq(total_timesteps, model_params=model_params)
+            eval_freq = self.get_eval_freq(total_timesteps, model_params=effective_params)
             callbacks = self.get_callbacks(self.eval_env, eval_freq, str(dk.data_path))
             logger.debug(
                 "Training [%s]: starting model.learn with total_timesteps=%d, eval_freq=%d",
@@ -2848,6 +2866,7 @@ class ReforceXY(BaseReinforcementLearningModel):
 
         # Ensure that the sampled parameters take precedence
         params = deepmerge(self.get_model_params(), params)
+        params["gamma"] = ReforceXY._resolve_discount_gamma(params)
         params["seed"] = params.get("seed", 42) + trial.number
         logger.info("Hyperopt [%s]: trial #%d params: %s", study_name, trial.number, params)
 
@@ -3079,7 +3098,13 @@ class MyRLEnv(Base5ActionRLEnv):
             )
         )
         # === PBRS COMMON PARAMETERS ===
-        self._potential_gamma = float(model_reward_parameters.get("potential_gamma", 0.95))
+        self._potential_gamma = ReforceXY._resolve_discount_gamma(
+            {
+                "gamma": model_reward_parameters.get(
+                    "potential_gamma", ReforceXY.DEFAULT_DISCOUNT_GAMMA
+                )
+            }
+        )
         if np.isclose(self._potential_gamma, 0.0):
             logger.warning(
                 "PBRS [%s]: potential_gamma=0 detected; PBRS delta will be -Φ(s) "
@@ -3090,7 +3115,7 @@ class MyRLEnv(Base5ActionRLEnv):
         # === EXIT POTENTIAL MODE ===
         # exit_potential_mode options:
         #   'canonical'           -> Φ(s')=0 (preserves invariance, disables additives)
-        #   'non_canonical'       -> Φ(s')=0 (allows additives, breaks invariance)
+        #   'non_canonical'       -> Φ(s')=0 (allows optional non-PBRS additives)
         #   'progressive_release' -> Φ(s')=Φ(s)*(1-decay_factor)
         #   'spike_cancel'        -> Φ(s')=Φ(s)/γ (Δ ≈ 0, cancels shaping)
         #   'retain_previous'     -> Φ(s')=Φ(s)
@@ -3447,23 +3472,17 @@ class MyRLEnv(Base5ActionRLEnv):
         return next_potential
 
     def is_pbrs_invariant_mode(self) -> bool:
-        """Return True if current configuration preserves PBRS policy invariance.
+        """Conservatively identify zero-at-exit PBRS without effective additives.
 
-        PBRS policy invariance (Ng et al. 1999) requires:
-        1. Canonical exit mode: Φ(terminal) = 0
-        2. No path-dependent additives: entry_additive = exit_additive = 0
-
-        When True, the shaped policy π'(s) is guaranteed to be equivalent to
-        the policy π(s) learned with base rewards only.
-
-        Returns
-        -------
-        bool
-            True if configuration preserves theoretical PBRS invariance
+        Policy invariance additionally assumes an observable state potential,
+        the learner's discount, and zero boundary potentials. This configuration
+        diagnostic does not guarantee equivalence of policies fitted by SB3.
+        Residual exit modes can retain history-dependent potential while neutral.
         """
-        return self._exit_potential_mode == ReforceXY._EXIT_POTENTIAL_MODES[0] and not (
-            self._entry_additive_enabled or self._exit_additive_enabled
-        )  # "canonical"
+        return (
+            self._exit_potential_mode == ReforceXY._EXIT_POTENTIAL_MODES[0]
+            or self._exit_potential_mode == ReforceXY._EXIT_POTENTIAL_MODES[1]
+        ) and not (self._entry_additive_enabled or self._exit_additive_enabled)
 
     @staticmethod
     def is_unsupported_pbrs_config(hold_potential_enabled: bool, add_state_info: bool) -> bool:
@@ -3593,7 +3612,7 @@ class MyRLEnv(Base5ActionRLEnv):
         else:
             # Neutral self-loop
             next_potential = prev_potential
-            reward_shaping = 0.0
+            reward_shaping = gamma * next_potential - prev_potential
 
         self._last_potential = float(next_potential)
         self._last_prev_potential = float(prev_potential)
@@ -4107,15 +4126,6 @@ class MyRLEnv(Base5ActionRLEnv):
         computed_reward_shaping = self._last_reward_shaping
         terminal_reward_shaping = -prev_potential
         reward_shaping_delta = terminal_reward_shaping - computed_reward_shaping
-        last_next_potential = self._last_next_potential
-
-        if np.isclose(computed_reward_shaping, terminal_reward_shaping) and np.isclose(
-            last_next_potential, 0.0
-        ):
-            self._last_potential = 0.0
-            self._last_next_potential = 0.0
-            return reward
-
         self._last_potential = 0.0
         self._last_next_potential = 0.0
         self._last_reward_shaping = terminal_reward_shaping
@@ -5420,7 +5430,7 @@ def convert_optuna_params_to_model_params(
             {
                 "n_steps": int(optuna_params.get("n_steps")),
                 "batch_size": int(optuna_params.get("batch_size")),
-                "gamma": float(optuna_params.get("gamma")),
+                "gamma": ReforceXY._resolve_discount_gamma(optuna_params),
                 "learning_rate": lr,
                 "ent_coef": float(optuna_params.get("ent_coef")),
                 "clip_range": cr,
@@ -5460,7 +5470,7 @@ def convert_optuna_params_to_model_params(
 
         model_params.update(
             {
-                "gamma": float(optuna_params.get("gamma")),
+                "gamma": ReforceXY._resolve_discount_gamma(optuna_params),
                 "batch_size": int(optuna_params.get("batch_size")),
                 "learning_rate": lr,
                 "buffer_size": int(optuna_params.get("buffer_size")),

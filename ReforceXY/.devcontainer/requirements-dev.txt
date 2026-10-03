@@ -3,3 +3,4 @@ scipy-stubs==1.18.1.1
 uv
 ruff
 basedpyright==1.40.1
+coverage==7.16.2

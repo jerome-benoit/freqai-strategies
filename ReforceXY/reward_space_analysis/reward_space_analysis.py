@@ -16,6 +16,7 @@ import numbers
 import pickle
 import random
 import warnings
+from decimal import Decimal
 from enum import Enum, IntEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Literal
@@ -254,7 +255,7 @@ _PARAMETER_BOUNDS: dict[str, dict[str, float]] = {
     "exit_additive_gain": {"min": 0.0},
 }
 
-RewardParamValue = float | str | bool | None
+RewardParamValue = float | np.integer[Any] | np.floating[Any] | str | bool | None
 RewardParams = dict[str, RewardParamValue]
 
 
@@ -399,7 +400,7 @@ def _get_float_param(
     if isinstance(value, bool):
         return float(int(value))
     # Numeric
-    if isinstance(value, (int, float)):
+    if isinstance(value, (int, float, np.integer, np.floating)):
         try:
             fval = float(value)
         except (ValueError, TypeError):
@@ -475,43 +476,47 @@ def _get_int_param(params: RewardParams, key: str, default: RewardParamValue | N
         default: Fallback value. If None, looks up from DEFAULT_MODEL_REWARD_PARAMETERS.
 
     Behavior:
-    - Accept bool/int/float/str numeric representations.
+    - Accept Python/NumPy real scalars and bool/str numeric representations.
     - Non-finite floats -> fallback to default coerced to int (or 0).
     - Strings: strip then parse float/int; on failure fallback.
     - None -> fallback.
-    - Final value is clamped to a signed 64-bit range implicitly by int().
+    - Return a Python int without an implicit fixed-width clamp.
     """
     if default is None:
         default = DEFAULT_MODEL_REWARD_PARAMETERS.get(key)
     value = params.get(key, default)
     if value is None:
-        return int(default) if isinstance(default, (int, float)) else 0
+        return int(default) if isinstance(default, (int, float, np.integer, np.floating)) else 0
     if isinstance(value, bool):
         return int(value)
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float):
+    if isinstance(value, (int, np.integer)):
+        return int(value)
+    if isinstance(value, (float, np.floating)):
         if not np.isfinite(value):
-            return int(default) if isinstance(default, (int, float)) else 0
+            return int(default) if isinstance(default, (int, float, np.integer, np.floating)) else 0
         try:
             return int(value)
         except (OverflowError, ValueError):
-            return int(default) if isinstance(default, (int, float)) else 0
+            return int(default) if isinstance(default, (int, float, np.integer, np.floating)) else 0
     if isinstance(value, str):
         stripped = value.strip()
         if stripped == "":
-            return int(default) if isinstance(default, (int, float)) else 0
+            return int(default) if isinstance(default, (int, float, np.integer, np.floating)) else 0
         try:
             if any(ch in stripped for ch in (".", "e", "E")):
                 fval = float(stripped)
                 if not np.isfinite(fval):
-                    return int(default) if isinstance(default, (int, float)) else 0
+                    return (
+                        int(default)
+                        if isinstance(default, (int, float, np.integer, np.floating))
+                        else 0
+                    )
                 return int(fval)
             return int(stripped)
         except (ValueError, OverflowError):
-            return int(default) if isinstance(default, (int, float)) else 0
+            return int(default) if isinstance(default, (int, float, np.integer, np.floating)) else 0
     # Unsupported type
-    return int(default) if isinstance(default, (int, float)) else 0
+    return int(default) if isinstance(default, (int, float, np.integer, np.floating)) else 0
 
 
 def _get_str_param(params: RewardParams, key: str, default: str | None = None) -> str:
@@ -539,6 +544,23 @@ def _compute_duration_ratio(trade_duration: int, max_trade_duration_candles: int
     return trade_duration / max(1, max_trade_duration_candles)
 
 
+def _scale_duration(duration: int, ratio: float) -> int:
+    """Keep ordinary float truncation; scale extended integers without narrowing."""
+    if duration.bit_length() <= 53:
+        scaled = duration * ratio
+        if math.isfinite(scaled):
+            return int(scaled)
+    numerator, denominator = ratio.as_integer_ratio()
+    product = duration * numerator
+    return product // denominator if product >= 0 else -(-product // denominator)
+
+
+def _resolve_pnl_target(profit_aim: float, risk_reward_ratio: float) -> float:
+    """Resolve the effective target used by runtime rewards and analysis diagnostics."""
+    target = float(profit_aim * risk_reward_ratio)
+    return 0.01 if target <= 0.0 else target
+
+
 def _is_short_allowed(trading_mode: str) -> bool:
     mode = trading_mode.lower()
     if mode in TRADING_MODES[1:]:  # "margin", "futures"
@@ -559,22 +581,24 @@ def _fail_safely(reason: str) -> float:
 def get_max_idle_duration_candles(
     params: RewardParams,
     *,
-    max_trade_duration_candles: int | None = None,
+    max_trade_duration_candles: float | np.integer[Any] | np.floating[Any] | None = None,
 ) -> int:
     mtd = (
-        int(max_trade_duration_candles)
-        if isinstance(max_trade_duration_candles, (int, float))
-        else None
+        _get_int_param(
+            {"max_trade_duration_candles": max_trade_duration_candles},
+            "max_trade_duration_candles",
+            0,
+        )
+        if isinstance(max_trade_duration_candles, (int, float, np.integer, np.floating))
+        else 0
     )
-    if mtd is None or mtd <= 0:
+    if mtd <= 0:
         mtd = _get_int_param(params, "max_trade_duration_candles")
         if mtd <= 0:
             mtd = int(DEFAULT_MODEL_REWARD_PARAMETERS.get("max_trade_duration_candles", 128))
 
     default_mid = int(DEFAULT_IDLE_DURATION_MULTIPLIER * int(mtd))
     mid = _get_int_param(params, "max_idle_duration_candles", default_mid)
-    if mid <= 0:
-        mid = default_mid
     return int(mid)
 
 
@@ -587,6 +611,8 @@ def validate_reward_parameters(
     Returns a sanitized copy plus adjustments mapping (param -> original/adjusted/reason).
     Behavior:
     - Boolean-like keys are coerced to bool.
+    - Native duration bounds are checked before conversion directly to Python int.
+    - Finite out-of-range gamma is clamped before float conversion in relaxed mode.
     - Numeric-bounded keys are coerced to float when provided as str/bool/None.
       * In strict mode: raise on non-numeric or out-of-bounds.
       * In relaxed mode: fallback to min bound or 0.0 with adjustment reason.
@@ -638,6 +664,50 @@ def validate_reward_parameters(
             continue
 
         original_val = sanitized[key]
+        # Check the native discount before normalization can round it into [0, 1].
+        if (
+            key == "potential_gamma"
+            and strict
+            and isinstance(original_val, (int, float, np.integer, np.floating))
+            and not bounds["min"] <= original_val <= bounds["max"]
+        ):
+            raise ValueError(f"Param: '{key}'={original_val!r} outside [0, 1]")
+        # Duration conversion and finite gamma clamps must precede binary64 narrowing.
+        native_duration = key in ("max_trade_duration_candles", "max_idle_duration_candles")
+        if (native_duration or key == "potential_gamma") and isinstance(
+            original_val, (int, float, np.integer, np.floating)
+        ):
+            native_finite = isinstance(original_val, (int, np.integer)) or np.isfinite(original_val)
+            if native_finite and (
+                native_duration or not bounds["min"] <= original_val <= bounds["max"]
+            ):
+                adjusted_native = original_val
+                reason_parts = []
+                if "min" in bounds and adjusted_native < bounds["min"]:
+                    if strict:
+                        raise ValueError(f"Param: '{key}'={original_val} below min {bounds['min']}")
+                    adjusted_native = bounds["min"]
+                    reason_parts.append(f"min={bounds['min']}")
+                if "max" in bounds and adjusted_native > bounds["max"]:
+                    if strict:
+                        raise ValueError(f"Param: '{key}'={original_val} above max {bounds['max']}")
+                    adjusted_native = bounds["max"]
+                    reason_parts.append(f"max={bounds['max']}")
+                adjusted_native = (
+                    int(adjusted_native) if native_duration else float(adjusted_native)
+                )
+                if not isinstance(original_val, (int, float)):
+                    reason_parts.insert(0, "numeric_coerce")
+                sanitized[key] = adjusted_native
+                if reason_parts:
+                    adjustments[key] = {
+                        "original": original_val,
+                        "adjusted": adjusted_native,
+                        "reason": ",".join(reason_parts),
+                        "validation_mode": "strict" if strict else "relaxed",
+                    }
+                continue
+
         # Robust coercion to float using helper (handles None/str/bool/non-finite)
         coerced_val = _get_float_param({key: original_val}, key, np.nan)
 
@@ -734,7 +804,7 @@ def validate_reward_parameters(
             }
     for key in ("max_trade_duration_candles", "max_idle_duration_candles"):
         if key in sanitized:
-            sanitized[key] = int(_get_float_param(sanitized, key))
+            sanitized[key] = _get_int_param(sanitized, key)
 
     return sanitized, adjustments
 
@@ -819,7 +889,7 @@ class RewardContext:
     Attributes
     ----------
     current_pnl : float
-        Unrealized PnL at the current tick (state s').
+        Unrealized PnL of the represented execution or marked next state.
     """
 
     current_pnl: float
@@ -1316,7 +1386,7 @@ def calculate_reward(
     elif "rr" in params:
         risk_reward_ratio = _get_float_param(params, "rr", float(risk_reward_ratio))
 
-    pnl_target = float(profit_aim * risk_reward_ratio)
+    pnl_target = _resolve_pnl_target(profit_aim, risk_reward_ratio)
 
     idle_factor = base_factor * (profit_aim / risk_reward_ratio)
     hold_factor = idle_factor
@@ -1434,7 +1504,7 @@ def calculate_reward(
         breakdown.exit_component += liquidation_reward
         breakdown.exit_pnl = terminal_context.current_pnl
 
-    # Apply PBRS only if enabled and not neutral self-loop
+    # Resolve effective PBRS and additive enablement for every transition.
     exit_mode = _resolve_exit_potential_mode(
         params.get("exit_potential_mode", DEFAULT_MODEL_REWARD_PARAMETERS["exit_potential_mode"]),
         warn_invalid=True,
@@ -1459,7 +1529,9 @@ def calculate_reward(
             # Neutral self-loops retain potential except at the terminal boundary.
             breakdown.prev_potential = prev_potential
             breakdown.next_potential = 0.0 if terminated else prev_potential
-            breakdown.reward_shaping = -prev_potential if terminated else 0.0
+            breakdown.reward_shaping = (
+                _get_potential_gamma(params) * breakdown.next_potential - prev_potential
+            )
             breakdown.pbrs_delta = breakdown.reward_shaping
             breakdown.total = base_reward + breakdown.reward_shaping
             return breakdown
@@ -1573,7 +1645,7 @@ def _sampling_probabilities(
 
     duration_ratio = _compute_duration_ratio(trade_duration, max_trade_duration_candles)
 
-    base_exit_prob = 1.0 / max(1, int(max_trade_duration_candles))
+    base_exit_prob = 1 / max(1, int(max_trade_duration_candles))
     base_exit_prob = float(
         np.clip(base_exit_prob, _SAMPLE_EXIT_PROBABILITY_MIN, _SAMPLE_EXIT_PROBABILITY_MAX)
     )
@@ -1734,12 +1806,14 @@ def simulate_samples(
         entry_enabled_raw,
         exit_enabled_raw,
     )
-    pbrs_invariant = bool(exit_mode == "canonical" and not (entry_enabled or exit_enabled))
+    pbrs_invariant = bool(
+        exit_mode in ("canonical", "non_canonical") and not (entry_enabled or exit_enabled)
+    )
 
     max_idle_duration_candles = get_max_idle_duration_candles(
         params, max_trade_duration_candles=max_trade_duration_candles
     )
-    max_trade_duration_cap = int(max_trade_duration_candles * max_duration_ratio)
+    max_trade_duration_cap = _scale_duration(max_trade_duration_candles, max_duration_ratio)
 
     samples: list[dict[str, float | None]] = []
     prev_potential: float = 0.0
@@ -2135,6 +2209,13 @@ def _binned_stats(
         include_lowest=True,
         duplicates="drop",
     )
+    return _aggregate_binned_stats(df, target, categories)
+
+
+def _aggregate_binned_stats(
+    df: pd.DataFrame, target: str, categories: pd.Series[Any] | pd.Categorical[str]
+) -> pd.DataFrame:
+    """Aggregate every bin, including empty bins, without changing reward observations."""
     aggregated = (
         pd.DataFrame({"bin": categories, target: df[target]})
         .dropna(subset=["bin"])
@@ -2142,6 +2223,40 @@ def _binned_stats(
         .agg(["count", "mean", "std", "min", "max"])
     )
     aggregated.index = aggregated.index.astype(str)
+    return aggregated
+
+
+# Three-duration endpoints, pandas' precision=3 rounding, and a factor-two margin.
+_DURATION_BIN_FLOAT_MAX: Final[int] = int(np.finfo(float).max) // 6000
+
+
+def _duration_binned_stats(
+    df: pd.DataFrame, column: str, target: str, max_duration: int
+) -> pd.DataFrame:
+    """Use exact category assignment when candle-valued float bins cannot be rendered."""
+    if max_duration <= _DURATION_BIN_FLOAT_MAX:
+        return _binned_stats(df, column, target, np.linspace(0, max_duration * 3.0, 13))
+
+    def bin_code(value: Any) -> int:
+        if pd.isna(value):
+            return -1
+        if isinstance(value, (int, np.integer)):
+            numerator, denominator = int(value), 1
+        elif not np.isfinite(value):
+            return 11 if value > 0 else 0
+        else:
+            numerator, denominator = value.as_integer_ratio()
+        # ceil(4 * value / max_duration) - 1 implements right-closed bins exactly.
+        return min(11, max(0, (4 * numerator - 1) // (max_duration * denominator)))
+
+    labels = [f"{'[' if i == 0 else '('}{i / 4:g}, {(i + 1) / 4:g}]" for i in range(12)]
+    categories = pd.Categorical.from_codes(
+        np.fromiter((bin_code(value) for value in df[column]), dtype=np.int8, count=len(df)),
+        categories=pd.Index(labels),
+        ordered=True,
+    )
+    aggregated = _aggregate_binned_stats(df, target, categories)
+    aggregated.index.name = "duration / max_trade_duration_candles"
     return aggregated
 
 
@@ -2158,8 +2273,6 @@ def _compute_relationship_stats(df: pd.DataFrame) -> dict[str, Any]:
         else {}
     )
     max_trade_duration_candles = _get_int_param(reward_params, "max_trade_duration_candles")
-    idle_bins = np.linspace(0, max_trade_duration_candles * 3.0, 13)
-    trade_bins = np.linspace(0, max_trade_duration_candles * 3.0, 13)
     exit_pnl = df.get("exit_pnl", df["pnl"]).fillna(df["pnl"])
     pnl_min = float(exit_pnl.min())
     pnl_max = float(exit_pnl.max())
@@ -2167,8 +2280,12 @@ def _compute_relationship_stats(df: pd.DataFrame) -> dict[str, Any]:
         pnl_max = pnl_min + 1e-6
     pnl_bins = np.linspace(pnl_min, pnl_max, 13)
 
-    idle_stats = _binned_stats(df, "idle_duration", "reward_idle", idle_bins)
-    hold_stats = _binned_stats(df, "trade_duration", "reward_hold", trade_bins)
+    idle_stats = _duration_binned_stats(
+        df, "idle_duration", "reward_idle", max_trade_duration_candles
+    )
+    hold_stats = _duration_binned_stats(
+        df, "trade_duration", "reward_hold", max_trade_duration_candles
+    )
     exit_stats = _binned_stats(df.assign(exit_pnl=exit_pnl), "exit_pnl", "reward_exit", pnl_bins)
 
     idle_stats = idle_stats.round(6)
@@ -2210,7 +2327,7 @@ def _compute_representativity_stats(
     risk_reward_ratio: float,
 ) -> dict[str, Any]:
     """Compute representativity statistics for the reward space."""
-    pnl_target = float(profit_aim * risk_reward_ratio)
+    pnl_target = _resolve_pnl_target(profit_aim, risk_reward_ratio)
     total = len(df)
     # Map numeric position codes to readable labels to avoid casting Neutral (0.5) to 0
     pos_label_map = {0.0: "Short", 0.5: "Neutral", 1.0: "Long"}
@@ -3243,6 +3360,18 @@ def _get_potential_gamma(params: RewardParams) -> float:
     - Guarantee returned float ∈ [0,1].
     """
     raw_gamma = params.get("potential_gamma")
+    bounds = _PARAMETER_BOUNDS["potential_gamma"]
+    if isinstance(raw_gamma, (int, float, np.integer, np.floating)):
+        native_finite = isinstance(raw_gamma, (int, np.integer)) or np.isfinite(raw_gamma)
+        if native_finite and not bounds["min"] <= raw_gamma <= bounds["max"]:
+            gamma = float(bounds["min"] if raw_gamma < bounds["min"] else bounds["max"])
+            warnings.warn(
+                f"PBRS: potential_gamma={raw_gamma} outside [0,1]; clamped to {gamma}",
+                RewardDiagnosticsWarning,
+                stacklevel=2,
+            )
+            return gamma
+
     gamma = _get_float_param(params, "potential_gamma", np.nan)
     if not np.isfinite(gamma):
         if "potential_gamma" in params:
@@ -3971,7 +4100,7 @@ def write_complete_statistical_analysis(
     def _fmt_val(v: Any, ndigits: int = 6) -> str:
         try:
             if isinstance(v, numbers.Integral):
-                return f"{int(v)}"
+                return str(Decimal(int(v)))
             elif isinstance(v, numbers.Real):
                 fv = float(v)
                 if math.isnan(fv):
@@ -4152,11 +4281,11 @@ def write_complete_statistical_analysis(
         f.write(f"| exit_potential_mode | {exit_mode} |\n")
         f.write(f"| potential_gamma | {potential_gamma} |\n")
         # Additional configuration details
-        f.write(f"| max_trade_duration_candles | {max_trade_duration_candles} |\n")
+        f.write(f"| max_trade_duration_candles | {Decimal(max_trade_duration_candles)} |\n")
         max_idle_duration_candles = get_max_idle_duration_candles(
             reward_params, max_trade_duration_candles=max_trade_duration_candles
         )
-        f.write(f"| max_idle_duration_candles | {max_idle_duration_candles} |\n")
+        f.write(f"| max_idle_duration_candles | {Decimal(max_idle_duration_candles)} |\n")
         f.write(f"| strict_diagnostics | {strict_diagnostics} |\n")
         f.write(f"| skip_feature_analysis | {skip_feature_analysis} |\n")
         f.write(f"| skip_partial_dependence | {skip_partial_dependence} |\n")
@@ -4174,7 +4303,13 @@ def write_complete_statistical_analysis(
                     continue  # already printed explicitly
                 try:
                     if k in reward_params and reward_params[k] != default_v:
-                        overrides_pairs.append(f"{k}={reward_params[k]}")
+                        value = reward_params[k]
+                        rendered = (
+                            str(Decimal(int(value)))
+                            if isinstance(value, numbers.Integral) and not isinstance(value, bool)
+                            else str(value)
+                        )
+                        overrides_pairs.append(f"{k}={rendered}")
                 except Exception:
                     continue
         if overrides_pairs:
@@ -4446,7 +4581,7 @@ def write_complete_statistical_analysis(
                 }
             )
             canonical_configuration = classification_metadata_valid and (
-                exit_potential_mode == "canonical"
+                exit_potential_mode in ("canonical", "non_canonical")
                 and not (entry_additive_effective or exit_additive_effective)
             )
             observed_additive_issues = []
@@ -4480,7 +4615,7 @@ def write_complete_statistical_analysis(
                 )
             elif not canonical_configuration:
                 reasons = []
-                if exit_potential_mode != "canonical":
+                if exit_potential_mode not in ("canonical", "non_canonical"):
                     reasons.append(f"exit_potential_mode='{exit_potential_mode}'")
                 if entry_additive_effective or exit_additive_effective:
                     additive_types = []
@@ -4886,7 +5021,7 @@ def main() -> None:
             "generated_at": pd.Timestamp.now().isoformat(),
             "num_samples": len(df),
             "seed": int(args.seed),
-            "pnl_target": float(profit_aim * risk_reward_ratio),
+            "pnl_target": _resolve_pnl_target(profit_aim, risk_reward_ratio),
             "parameter_adjustments": adjustments,
             "reward_params": resolved_reward_params,
             "effective": effective_params,

@@ -1,7 +1,7 @@
 """Regression contracts for learning eligibility, replay and temporal observations."""
 
+import json
 import tempfile
-import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -11,15 +11,15 @@ import pandas as pd
 from freqtrade.enums import RunMode
 from freqtrade.exceptions import DependencyException
 from freqtrade.exchange import timeframe_to_seconds
-from freqtrade.freqai.data_drawer import FreqaiDataDrawer
+from freqtrade.freqai.data_drawer import METADATA, FreqaiDataDrawer
 from freqtrade.freqai.data_kitchen import FreqaiDataKitchen
 from optuna import TrialPruned, create_study
+from qa_support import QaTestCase, RecordingPolicy, model_config
 
-from ReforceXY.tests.test_review_contracts import RecordingPolicy, model_config
 from ReforceXY.user_data.freqaimodels.ReforceXY import ReforceXY
 
 
-class TrainingObservationsTest(unittest.TestCase):
+class TrainingObservationsTest(QaTestCase):
     def test_dqn_eligibility_restart_and_chronology(self):
         for algorithm in ("DQN", "QRDQN"):
             with self.subTest(algorithm=algorithm), tempfile.TemporaryDirectory() as temp:
@@ -81,6 +81,42 @@ class TrainingObservationsTest(unittest.TestCase):
                 np.testing.assert_array_equal(trained.replay_buffer.observations, replay)
                 self.assertEqual(restored.replay_buffer.size(), 0)
                 self.assertIs(model.dd.load_data(dk.pair, dk), restored)
+                compatible, pipeline = model._resolve_deployment_state(dk, dk.pair)
+                previous_updates = compatible._n_updates
+                continued_dk = FreqaiDataKitchen(config, live=True, pair=dk.pair)
+                continued_dk.data_path = Path(temp) / "continued"
+                continued_dk.data_path.mkdir()
+                model.fit(
+                    dk.data_dictionary,
+                    continued_dk,
+                    prices_train=dk.data_dictionary["train_prices"],
+                    prices_test=dk.data_dictionary["test_prices"],
+                    deployment_state=(compatible, pipeline),
+                )
+                self.assertGreater(compatible._n_updates, previous_updates)
+                metadata_path = dk.data_path / f"{dk.model_filename}_{METADATA}.json"
+                metadata = json.loads(metadata_path.read_text())
+                current_generation = metadata[model._DEPLOYMENT_COORDINATE_MARKER_KEY]
+                metadata[model._DEPLOYMENT_COORDINATE_MARKER_KEY] = (
+                    "chronological-frozen-pipelines-v2"
+                )
+                metadata_path.write_text(json.dumps(metadata))
+                for cached in (False, True):
+                    with self.subTest(legacy_cached=cached):
+                        model.dd.model_dictionary.clear()
+                        model.dd.meta_data_dictionary.clear()
+                        if cached:
+                            inference = model.dd.load_data(dk.pair, dk)
+                            action, _ = inference.predict(
+                                np.zeros(inference.observation_space.shape, dtype=np.float32),
+                                deterministic=True,
+                            )
+                            self.assertTrue(inference.action_space.contains(action))
+                        with self.assertRaisesRegex(DependencyException, "Reset trained models"):
+                            model._resolve_deployment_state(dk, dk.pair)
+                metadata[model._DEPLOYMENT_COORDINATE_MARKER_KEY] = current_generation
+                metadata_path.write_text(json.dumps(metadata))
+                model.dd.meta_data_dictionary.clear()
                 model.dd.model_dictionary.clear()
                 (dk.data_path / dk.data["reforcexy_replay"]).unlink()
                 inference_model = model.dd.load_data(dk.pair, dk)

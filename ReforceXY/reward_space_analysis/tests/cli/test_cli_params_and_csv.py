@@ -15,11 +15,12 @@ import pytest
 from reward_space_analysis import (
     DEFAULT_MODEL_REWARD_PARAMETERS,
     Actions,
+    _compute_representativity_stats,
     get_max_idle_duration_candles,
 )
 from test_reward_space_analysis_cli import _is_warning_header, run_scenario
 
-from ..constants import SCENARIOS, SEEDS, TOLERANCE
+from ..constants import PARAMS, SCENARIOS, SEEDS, TOLERANCE
 from ..test_base import RewardSpaceTestBase
 
 # Pytest marker for taxonomy classification
@@ -145,6 +146,49 @@ class TestParamsPropagation(RewardSpaceTestBase):
     - params_hash generation when simulation params differ
     - PBRS invariance summary section when reward_shaping present
     """
+
+    def test_zero_target_and_idle_cap_reach_rewards_and_manifest(self):
+        """Keep configured idle cap zero and expose the effective runtime profit target.
+
+        **Invariant:** cli-effective-reward-boundaries-145
+        **Setup:** fixed seed, zero profit aim and explicit idle cap zero.
+        **Assertions:** target metadata agrees with near-target market coverage;
+        idle ratios use a one-candle denominator rather than the derived cap.
+        """
+        out_dir = self.output_path / "zero_reward_boundaries"
+        result = _run_cli(
+            out_dir=out_dir,
+            args=[
+                "--num_samples",
+                str(SCENARIOS.CLI_NUM_SAMPLES_STANDARD),
+                "--seed",
+                str(SEEDS.BASE),
+                "--profit_aim",
+                "0",
+                "--max_idle_duration_candles",
+                "0",
+                "--hold_potential_enabled",
+                "1",
+                "--skip_feature_analysis",
+                "--skip_partial_dependence",
+            ],
+        )
+        _assert_cli_success(self, result)
+        manifest = json.loads((out_dir / "manifest.json").read_text())
+        samples = pd.read_csv(out_dir / "reward_samples.csv")
+        self.assertEqual(manifest["pnl_target"], PARAMS.PNL_TARGET_FALLBACK)
+        self.assertEqual(manifest["reward_params"]["max_idle_duration_candles"], 0)
+        pd.testing.assert_series_equal(
+            samples["idle_ratio"], samples["idle_duration"].astype(float), check_names=False
+        )
+        expected_near_target = (
+            (samples["pnl"] >= 0.8 * PARAMS.PNL_TARGET_FALLBACK)
+            & (samples["pnl"] <= 1.2 * PARAMS.PNL_TARGET_FALLBACK)
+        ).mean()
+        stats = _compute_representativity_stats(samples, 0.0, PARAMS.RISK_REWARD_RATIO)
+        self.assertAlmostEqualFloat(
+            stats["pnl_near_target"], expected_near_target, tolerance=TOLERANCE.GENERIC_EQ
+        )
 
     def test_skip_feature_analysis_summary_branch(self):
         """CLI run with --skip_feature_analysis should mark feature importance skipped in summary and omit feature_importance.csv."""

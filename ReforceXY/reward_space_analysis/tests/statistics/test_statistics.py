@@ -12,6 +12,7 @@ from reward_space_analysis import (
     RewardDiagnosticsWarning,
     _binned_stats,
     _compute_relationship_stats,
+    _duration_binned_stats,
     bootstrap_confidence_intervals,
     compute_distribution_shift_metrics,
     distribution_diagnostics,
@@ -28,6 +29,7 @@ from ..constants import (
     STATISTICAL,
     TOLERANCE,
 )
+from ..helpers import simulate_samples_with_defaults
 from ..test_base import RewardSpaceTestBase
 
 _perform_feature_analysis = getattr(reward_space_analysis, "_perform_feature_analysis", None)
@@ -37,6 +39,83 @@ pytestmark = pytest.mark.statistics
 
 class TestStatistics(RewardSpaceTestBase):
     """Statistical tests: metrics, diagnostics, bootstrap, correlations."""
+
+    def test_extended_duration_relationship_bins_preserve_mass_and_reward_means(self):
+        """Large configured durations retain all observations in truthful ratio bins."""
+        for duration in (10**306, 10**400):
+            with self.subTest(magnitude=duration.bit_length()):
+                df = simulate_samples_with_defaults(
+                    self.base_params(max_trade_duration_candles=duration),
+                    num_samples=32,
+                    seed=42,
+                    trading_mode="spot",
+                )
+                result = _compute_relationship_stats(df)
+                for name, target in (("idle_stats", "reward_idle"), ("hold_stats", "reward_hold")):
+                    stats = result[name]
+                    self.assertEqual(stats["count"].sum(), len(df))
+                    self.assertEqual(stats.iloc[0]["count"], len(df))
+                    self.assertAlmostEqual(stats.iloc[0]["mean"], df[target].mean(), places=6)
+                    self.assertEqual(stats.index.name, "duration / max_trade_duration_candles")
+                    self.assertEqual(stats.index[0], "[0, 0.25]")
+                    self.assertEqual(stats.index[-1], "(2.75, 3]")
+
+    def test_extended_duration_bins_preserve_nullable_observation_semantics(self):
+        """Missing nullable duration observations stay excluded from reward aggregates."""
+        for dtype in ("Int64", "Float64"):
+            with self.subTest(dtype=dtype):
+                df = simulate_samples_with_defaults(
+                    self.base_params(max_trade_duration_candles=10**400),
+                    num_samples=32,
+                    seed=42,
+                    trading_mode="spot",
+                )
+                df["idle_duration"] = df["idle_duration"].astype(dtype)
+                df.loc[0, "idle_duration"] = pd.NA
+                stats = _compute_relationship_stats(df)["idle_stats"]
+                present = df["idle_duration"].notna()
+                self.assertEqual(stats["count"].sum(), int(present.sum()))
+                self.assertAlmostEqual(
+                    stats.iloc[0]["mean"],
+                    df.loc[present, "reward_idle"].mean(),
+                    places=6,
+                )
+
+    def test_extended_duration_bins_distinguish_exact_right_closed_boundaries(self):
+        """Adjacent integer observations at huge boundaries must not round into one bin."""
+        duration = 10**400
+        values = [
+            0,
+            1,
+            duration // 4,
+            duration // 4 + 1,
+            duration // 2,
+            duration // 2 + 1,
+            3 * duration,
+            3 * duration + 1,
+        ]
+        df = pd.DataFrame({"duration": pd.Series(values, dtype=object), "reward": np.arange(8.0)})
+        result = _duration_binned_stats(df, "duration", "reward", duration)
+        self.assertEqual(result["count"].tolist(), [3, 2, 1] + [0] * 8 + [2])
+        self.assertEqual(result.iloc[0]["mean"], 1.0)
+        self.assertEqual(result.iloc[1]["mean"], 3.5)
+        self.assertEqual(result.iloc[2]["mean"], 5.0)
+        self.assertEqual(result.iloc[-1]["mean"], 6.5)
+
+    def test_ordinary_duration_relationship_bins_retain_candle_units(self):
+        """The normal configured scale keeps the existing candle-valued intervals."""
+        df = simulate_samples_with_defaults(
+            self.base_params(max_trade_duration_candles=128),
+            num_samples=32,
+            seed=42,
+        )
+        stats = _compute_relationship_stats(df)["idle_stats"]
+        self.assertEqual(stats.index.name, "bin")
+        first_upper = float(stats.index[0].split(",")[1].rstrip("]"))
+        last_upper = float(stats.index[-1].split(",")[1].rstrip("]"))
+        self.assertEqual(first_upper, 128 / 4)
+        self.assertEqual(last_upper, 3 * 128)
+        self.assertEqual(stats["count"].sum(), len(df))
 
     def test_statistics_feature_analysis_skip_partial_dependence(self):
         """Invariant 107: skip_partial_dependence=True yields empty partial_deps."""

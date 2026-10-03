@@ -228,6 +228,21 @@ Columns:
 | statistics-report-inference-projection-146    | statistics | Constant confidence intervals require declared independence, even with an empty hypothesis map | statistics/test_statistics.py::test_report_projects_constant_intervals_only_with_declared_independence | Numeric projection; True → False → default rewrites the same report; non-owning bounds reference: statistics-constant-dist-exact-ci-113a                                       |
 | statistics-report-feature-availability-147    | statistics | Complete importance exports require a fitted model and finite means and standard deviations    | statistics/test_statistics.py::test_report_certifies_feature_importance_only_from_finite_estimates     | Real finite-zero, single-feature, empty-feature and one-test-row states; numerical CSV and availability.                                                                       |
 
+| cli-effective-reward-boundaries-145 | cli | Effective profit-target fallback and explicit zero idle denominator reach artifacts | cli/test_cli_params_and_csv.py::test_zero_target_and_idle_cap_reach_rewards_and_manifest | Metadata and near-target market coverage agree with runtime boundaries |
+| pbrs-native-integer-durations-150 | pbrs | Native integer durations and adjustment metadata retain exact values | pbrs/test_pbrs.py::test_native_integer_durations_preserve_exact_values | Python, signed NumPy and unsigned NumPy integers; strict and relaxed |
+| pbrs-native-duration-bounds-151 | pbrs | Floating duration bounds are checked before truncation without narrowing | pbrs/test_pbrs.py::test_native_duration_bounds_precede_truncation | Extended-precision cases run when supported by the platform |
+| pbrs-native-gamma-reward-148 | pbrs | Finite out-of-range native gamma clamps reach the public reward | pbrs/test_pbrs.py::test_native_finite_gamma_clamps_the_public_reward | Extended-range cases run when supported by the platform |
+| pbrs-relaxed-native-gamma-149 | pbrs | Relaxed native gamma clamps reach rewards while strict validation rejects | pbrs/test_pbrs.py::test_relaxed_native_gamma_clamps_before_reward_calculation | Preserves direct, strict and relaxed boundary contracts |
+| api-native-duration-consumers-152 | api | Validated extended native durations reach real trajectories and finite rewards | api/test_api_helpers.py::test_simulation_consumes_extended_native_duration_without_narrowing | Includes the actual exit hazard and terminal state |
+| api-fractional-duration-cap-153 | api | Ordinary fractional caps retain truncation and rounded boundaries | api/test_api_helpers.py::test_simulation_preserves_small_fractional_duration_caps | Includes zero cap and one-third / one-seventh ratios |
+| api-nonfinite-duration-fallback-154 | api | Explicit non-finite native durations preserve configured/default idle-cap precedence | api/test_api_helpers.py::test_nonfinite_explicit_duration_uses_configured_then_default_idle_cap | Python and NumPy NaN and both infinities |
+| api-unbounded-duration-report-155 | api | Public reports retain exact duration configuration beyond integer-string digit limits | api/test_api_helpers.py::test_public_report_preserves_unbounded_duration_configuration | Leaves interpreter globals and boolean override semantics unchanged |
+| statistics-extended-duration-mass-156 | statistics | Large-duration bins retain all observations, reward means and declared ratio units | statistics/test_statistics.py::test_extended_duration_relationship_bins_preserve_mass_and_reward_means | Actual simulator output |
+| statistics-exact-duration-boundary-157 | statistics | Adjacent integer observations at extended right-closed boundaries stay distinguishable | statistics/test_statistics.py::test_extended_duration_bins_distinguish_exact_right_closed_boundaries | Includes outside-range clipping |
+| statistics-candle-duration-units-158 | statistics | Ordinary duration relationship tables retain candle-valued boundaries | statistics/test_statistics.py::test_ordinary_duration_relationship_bins_retain_candle_units | Unchanged ordinary output scale |
+| statistics-nullable-duration-bins-159 | statistics | Nullable numeric duration observations remain excluded from aggregates at extended scales | statistics/test_statistics.py::test_extended_duration_bins_preserve_nullable_observation_semantics | Counts and reward means use only nonmissing observations |
+
+
 ### Non-Owning Smoke / Reference Checks
 
 Tests that check an invariant owned elsewhere identify its owner in a comment
@@ -339,6 +354,18 @@ Detailed numerical assertions reside in their targeted directories. Integration
 checks exercise cross-component behavior; matching report text is not numerical
 correctness. The mapping defines current ownership and allowed non-owning or
 multi-path coverage.
+
+Real runtime/reference parity is owned by
+`ReforceXY/tests/test_model_pbrs_transitions.py::PbrsTransitionsTest::test_analysis_matches_real_rewards_across_modes_and_parameter_boundaries`.
+Native-precision rejection of out-of-range analytical discounts is owned by
+`ReforceXY/tests/test_model_pbrs_transitions.py::PbrsTransitionsTest::test_analysis_rejects_gamma_outside_bounds_before_float_rounding`.
+Run these tests in the Freqtrade RL QA image through the canonical runtime suite; the
+standalone analysis environment deliberately does not require Freqtrade/SB3.
+The comparator exercises direct/strict/relaxed parameter paths, real fills and
+terminal liquidation, carries reference potential independently, and checks tiny
+shaping components more tightly than the report-verification tolerance.
+Raw random shaping sums are not discounted invariance oracles. Complete-episode
+discounted identities and report continuity checks retain their existing owners.
 
 ## When to Run Tests
 

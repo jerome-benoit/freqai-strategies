@@ -161,12 +161,10 @@ class StatisticalConfig:
     Attributes:
         BH_FP_RATE_THRESHOLD: Benjamini-Hochberg false positive rate threshold (0.15)
         BOOTSTRAP_DEFAULT_ITERATIONS: Default bootstrap resampling count (100)
-        EXIT_PROBABILITY_THRESHOLD: Probability threshold for exit events (0.15)
     """
 
     BH_FP_RATE_THRESHOLD: float = 0.15
     BOOTSTRAP_DEFAULT_ITERATIONS: int = 100
-    EXIT_PROBABILITY_THRESHOLD: float = 0.15
 
 
 @dataclass(frozen=True)
@@ -254,6 +252,7 @@ class TestParameters:
     Attributes:
         BASE_FACTOR: Default base factor for reward scaling (90.0)
         PROFIT_AIM: Target profit threshold (0.06)
+        PNL_TARGET_FALLBACK: Effective target for nonpositive profit aim products (0.01)
         RISK_REWARD_RATIO: Standard risk/reward ratio (2.0)
         RISK_REWARD_RATIO_HIGH: High risk/reward ratio for stress tests (4.0)
         PNL_STD: Standard deviation for PnL generation (0.02)
@@ -281,6 +280,7 @@ class TestParameters:
 
     BASE_FACTOR: float = 90.0
     PROFIT_AIM: float = 0.06
+    PNL_TARGET_FALLBACK: float = 0.01
     RISK_REWARD_RATIO: float = 2.0
     RISK_REWARD_RATIO_HIGH: float = 4.0
     PNL_STD: float = 0.02
@@ -325,7 +325,6 @@ class TestScenarios:
         SAMPLE_SIZE_CONST_DF: Sample size for constant dataframes (64)
         SAMPLE_SIZE_FEATURE_UNDEFINED: Four rows leave one test row and undefined R² (4)
         SAMPLE_SIZE_SHIFT_SCALE: Sample size for shift/scale tests (256)
-        PBRS_SIMULATION_STEPS: Number of steps for PBRS simulation tests (500)
         MONTE_CARLO_ITERATIONS: Monte Carlo simulation iterations (160)
         PBRS_SWEEP_ITERATIONS: Number of iterations for PBRS sweep tests (120)
         BOOTSTRAP_MINIMAL_ITERATIONS: Minimal bootstrap iterations for quick tests (25)
@@ -365,7 +364,6 @@ class TestScenarios:
     SAMPLE_SIZE_SHIFT_SCALE: int = 256
 
     # Specialized test scenario sizes
-    PBRS_SIMULATION_STEPS: int = 500
     MONTE_CARLO_ITERATIONS: int = 160
     PBRS_SWEEP_ITERATIONS: int = 120
     BOOTSTRAP_MINIMAL_ITERATIONS: int = 25

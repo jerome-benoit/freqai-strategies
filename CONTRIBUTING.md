@@ -13,16 +13,16 @@ follow the [evaluation protocol](docs/evaluation.md).
 
 ## Runtime regressions
 
-Run each suite in its matching Freqtrade QA image, with the repository mounted
-at `/workspace` and `/workspace` as the working directory:
+Run a strategy's suite inside its matching Freqtrade QA image, with the checkout
+mounted at `/workspace` and that directory as the working directory. Use the
+shared runner for canonical discovery and the coverage gate:
 
 ```shell
-# ReforceXY
-python -m unittest discover -s ReforceXY/tests -v
-
-# QuickAdapter
-PYTHONPATH=/workspace/quickadapter/user_data/strategies \
-  python -m unittest discover -s quickadapter/tests -v
+# Inside the ReforceXY QA image; select quickadapter inside its own QA image.
+strategy=ReforceXY
+export PYTHONPATH=/workspace/$strategy/user_data/strategies
+export COVERAGE_RCFILE=$strategy/.coveragerc COVERAGE_FILE=/tmp/.coverage
+sh scripts/run-coverage.sh -s "$strategy/tests" -v
 ```
 
 Each suite's `test_config_template.py` applies the
@@ -32,40 +32,35 @@ the two CCXT `rateLimit` examples. Only the selected comment markers are removed
 the parsed configuration must otherwise remain unchanged. Example values are
 read from the template, not duplicated in the tests.
 
-Both commands must be run from the repository root, which is what the
-container's `--workdir /workspace` provides. To select one concern, pass a
-pattern that matches the whole `module.Class.method` name; a bare substring
-selects more than you want, and a pattern that matches nothing runs zero tests
-and fails with exit code 5:
+Both coverage commands need the same explicit configuration and data path; the
+runner propagates test and coverage-report failures. QuickAdapter needs the
+strategy path for bare-name imports; it is optional for ReforceXY.
 
-```shell
-PYTHONPATH=quickadapter/user_data/strategies \
-  python -m unittest discover -s quickadapter/tests -k 'test_utils_zigzag.*' -v
-```
+For a focused debug run without coverage, use `python -m unittest discover` with
+the same suite path and an exact `module.Class.method` pattern, for example
+`-k 'test_model_pbrs_transitions.*' -v` for ReforceXY. A pattern matching no tests
+fails with exit code 5. This debug run does not establish the coverage gate.
 
-CI runs type checks and runtime regressions in one QA matrix entry per strategy.
-The shared runtime step sets each strategy's `PYTHONPATH`. QuickAdapter needs
-this for direct `unittest` discovery because its model imports `LabelTransformer`
-and `Utils` by bare names; ReforceXY resolves its imports without it, so the
-setting is optional there. QuickAdapter's regressions additionally run under
-`coverage.py`; the reward-space analysis suite runs separately with `uv`,
-without a Freqtrade image.
+Each strategy QA matrix entry runs its type check and canonical coverage suite.
+ReforceXY additionally runs once with `FREQAI_QA_SHUFFLE_SEED=1`. This permutes
+methods within test classes, not module or class order. `QaTestCase` restores the
+action-mask cache and Python, NumPy and CPU Torch RNG states before and after
+each test. Lifecycle probes cover successful cases, body failures and setup or
+teardown errors; each test still owns isolation of any other mutable state.
+The reward-space analysis suite runs separately with `uv`, without a Freqtrade
+image.
 
 ## Coverage gate
 
-Within the strategy QA matrix, QuickAdapter is the only strategy whose runtime
-regressions enforce a coverage gate. The standalone reward-space analysis suite
-has its own gate; see [its testing documentation](ReforceXY/reward_space_analysis/tests/README.md).
-QuickAdapter's configuration is `quickadapter/.coveragerc`, selected explicitly
-because coverage.py looks for `.coveragerc` in the directory it is run from and
-does not search parents:
+Both strategy suites enforce their own runtime coverage gates. ReforceXY
+measures the complete `ReforceXY/user_data` tree with a 70% minimum, including
+branches and non-imported namespace files. Tests, the analytical package and
+QuickAdapter do not contribute to that denominator. The standalone analysis
+suite has a separate 85% gate; see [its testing documentation](ReforceXY/reward_space_analysis/tests/README.md).
 
-```shell
-export PYTHONPATH=quickadapter/user_data/strategies
-export COVERAGE_RCFILE=quickadapter/.coveragerc COVERAGE_FILE=/tmp/.coverage
-
-sh scripts/run-coverage.sh -s quickadapter/tests -v
-```
+Each strategy's `.coveragerc` is selected explicitly because coverage.py does
+not search parent directories. Set `strategy=quickadapter` in its matching QA
+image and use the same canonical runner command above for its unchanged gate.
 
 The shared runner gives both coverage commands the same environment. When running
 `coverage run` and `coverage report` separately, export both variables for both
@@ -85,7 +80,7 @@ with the shipped configuration already in place — a measurement taken without
 `branch` and `include_namespace_packages` reports a different denominator and
 is not a valid input — then update the value and the `# measured` annotation
 above it in the same commit. Raise the floor only; a drop needs the reason in
-the pull request. `quickadapter/tests/test_coverage_floor.py` refuses a
+the pull request. Each strategy's `tests/test_coverage_floor.py` refuses a
 placeholder, a missing or undated measurement annotation, a measurement below
 the floor it justifies, a floor below the current minimum, a floor that is not a
 percentage, a `precision` coarse enough to round the total past the floor, a
@@ -156,8 +151,8 @@ must be regular files; symbolic links and other special files are rejected. The
 wrapper rejects direct host and wrong-image execution so Freqtrade imports and
 dependency versions remain exact.
 
-The BasedPyright and type-stub versions are pinned in each project's
-`.devcontainer/requirements-dev.txt`, as is `coverage` in QuickAdapter's.
+The BasedPyright, type-stub and coverage versions are pinned in each project's
+`.devcontainer/requirements-dev.txt`.
 The Freqtrade base images intentionally follow their rolling `stable_freqai`
 and `stable_freqairl` tags, so record the resolved image digests when a
 reproducible audit is required.

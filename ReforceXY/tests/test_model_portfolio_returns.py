@@ -5,11 +5,12 @@ import unittest
 
 import numpy as np
 import pandas as pd
+from qa_support import QaTestCase
 
 from ReforceXY.user_data.freqaimodels.ReforceXY import Actions, MyRLEnv, ReforceXY
 
 
-class PortfolioReturnsTest(unittest.TestCase):
+class PortfolioReturnsTest(QaTestCase):
     def make_env(self, prices, *, compound=True, fee=0.0015, price_index=None):
         frame = pd.DataFrame({"open": prices}, index=price_index)
         env = MyRLEnv(
