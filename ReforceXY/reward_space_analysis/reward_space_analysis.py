@@ -16,6 +16,7 @@ import numbers
 import pickle
 import random
 import warnings
+from decimal import Decimal
 from enum import Enum, IntEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Literal
@@ -543,6 +544,17 @@ def _compute_duration_ratio(trade_duration: int, max_trade_duration_candles: int
     return trade_duration / max(1, max_trade_duration_candles)
 
 
+def _scale_duration(duration: int, ratio: float) -> int:
+    """Keep ordinary float truncation; scale extended integers without narrowing."""
+    if duration.bit_length() <= 53:
+        scaled = duration * ratio
+        if math.isfinite(scaled):
+            return int(scaled)
+    numerator, denominator = ratio.as_integer_ratio()
+    product = duration * numerator
+    return product // denominator if product >= 0 else -(-product // denominator)
+
+
 def _resolve_pnl_target(profit_aim: float, risk_reward_ratio: float) -> float:
     """Resolve the effective target used by runtime rewards and analysis diagnostics."""
     target = float(profit_aim * risk_reward_ratio)
@@ -569,14 +581,18 @@ def _fail_safely(reason: str) -> float:
 def get_max_idle_duration_candles(
     params: RewardParams,
     *,
-    max_trade_duration_candles: int | None = None,
+    max_trade_duration_candles: float | np.integer[Any] | np.floating[Any] | None = None,
 ) -> int:
     mtd = (
-        int(max_trade_duration_candles)
+        _get_int_param(
+            {"max_trade_duration_candles": max_trade_duration_candles},
+            "max_trade_duration_candles",
+            0,
+        )
         if isinstance(max_trade_duration_candles, (int, float, np.integer, np.floating))
-        else None
+        else 0
     )
-    if mtd is None or mtd <= 0:
+    if mtd <= 0:
         mtd = _get_int_param(params, "max_trade_duration_candles")
         if mtd <= 0:
             mtd = int(DEFAULT_MODEL_REWARD_PARAMETERS.get("max_trade_duration_candles", 128))
@@ -1629,7 +1645,7 @@ def _sampling_probabilities(
 
     duration_ratio = _compute_duration_ratio(trade_duration, max_trade_duration_candles)
 
-    base_exit_prob = 1.0 / max(1, int(max_trade_duration_candles))
+    base_exit_prob = 1 / max(1, int(max_trade_duration_candles))
     base_exit_prob = float(
         np.clip(base_exit_prob, _SAMPLE_EXIT_PROBABILITY_MIN, _SAMPLE_EXIT_PROBABILITY_MAX)
     )
@@ -1797,7 +1813,7 @@ def simulate_samples(
     max_idle_duration_candles = get_max_idle_duration_candles(
         params, max_trade_duration_candles=max_trade_duration_candles
     )
-    max_trade_duration_cap = int(max_trade_duration_candles * max_duration_ratio)
+    max_trade_duration_cap = _scale_duration(max_trade_duration_candles, max_duration_ratio)
 
     samples: list[dict[str, float | None]] = []
     prev_potential: float = 0.0
@@ -2193,6 +2209,13 @@ def _binned_stats(
         include_lowest=True,
         duplicates="drop",
     )
+    return _aggregate_binned_stats(df, target, categories)
+
+
+def _aggregate_binned_stats(
+    df: pd.DataFrame, target: str, categories: pd.Series[Any] | pd.Categorical[str]
+) -> pd.DataFrame:
+    """Aggregate every bin, including empty bins, without changing reward observations."""
     aggregated = (
         pd.DataFrame({"bin": categories, target: df[target]})
         .dropna(subset=["bin"])
@@ -2200,6 +2223,40 @@ def _binned_stats(
         .agg(["count", "mean", "std", "min", "max"])
     )
     aggregated.index = aggregated.index.astype(str)
+    return aggregated
+
+
+# Three-duration endpoints, pandas' precision=3 rounding, and a factor-two margin.
+_DURATION_BIN_FLOAT_MAX: Final[int] = int(np.finfo(float).max) // 6000
+
+
+def _duration_binned_stats(
+    df: pd.DataFrame, column: str, target: str, max_duration: int
+) -> pd.DataFrame:
+    """Use exact category assignment when candle-valued float bins cannot be rendered."""
+    if max_duration <= _DURATION_BIN_FLOAT_MAX:
+        return _binned_stats(df, column, target, np.linspace(0, max_duration * 3.0, 13))
+
+    def bin_code(value: Any) -> int:
+        if pd.isna(value):
+            return -1
+        if isinstance(value, (int, np.integer)):
+            numerator, denominator = int(value), 1
+        elif not np.isfinite(value):
+            return 11 if value > 0 else 0
+        else:
+            numerator, denominator = value.as_integer_ratio()
+        # ceil(4 * value / max_duration) - 1 implements right-closed bins exactly.
+        return min(11, max(0, (4 * numerator - 1) // (max_duration * denominator)))
+
+    labels = [f"{'[' if i == 0 else '('}{i / 4:g}, {(i + 1) / 4:g}]" for i in range(12)]
+    categories = pd.Categorical.from_codes(
+        np.fromiter((bin_code(value) for value in df[column]), dtype=np.int8, count=len(df)),
+        categories=pd.Index(labels),
+        ordered=True,
+    )
+    aggregated = _aggregate_binned_stats(df, target, categories)
+    aggregated.index.name = "duration / max_trade_duration_candles"
     return aggregated
 
 
@@ -2216,8 +2273,6 @@ def _compute_relationship_stats(df: pd.DataFrame) -> dict[str, Any]:
         else {}
     )
     max_trade_duration_candles = _get_int_param(reward_params, "max_trade_duration_candles")
-    idle_bins = np.linspace(0, max_trade_duration_candles * 3.0, 13)
-    trade_bins = np.linspace(0, max_trade_duration_candles * 3.0, 13)
     exit_pnl = df.get("exit_pnl", df["pnl"]).fillna(df["pnl"])
     pnl_min = float(exit_pnl.min())
     pnl_max = float(exit_pnl.max())
@@ -2225,8 +2280,12 @@ def _compute_relationship_stats(df: pd.DataFrame) -> dict[str, Any]:
         pnl_max = pnl_min + 1e-6
     pnl_bins = np.linspace(pnl_min, pnl_max, 13)
 
-    idle_stats = _binned_stats(df, "idle_duration", "reward_idle", idle_bins)
-    hold_stats = _binned_stats(df, "trade_duration", "reward_hold", trade_bins)
+    idle_stats = _duration_binned_stats(
+        df, "idle_duration", "reward_idle", max_trade_duration_candles
+    )
+    hold_stats = _duration_binned_stats(
+        df, "trade_duration", "reward_hold", max_trade_duration_candles
+    )
     exit_stats = _binned_stats(df.assign(exit_pnl=exit_pnl), "exit_pnl", "reward_exit", pnl_bins)
 
     idle_stats = idle_stats.round(6)
@@ -4041,7 +4100,7 @@ def write_complete_statistical_analysis(
     def _fmt_val(v: Any, ndigits: int = 6) -> str:
         try:
             if isinstance(v, numbers.Integral):
-                return f"{int(v)}"
+                return str(Decimal(int(v)))
             elif isinstance(v, numbers.Real):
                 fv = float(v)
                 if math.isnan(fv):
@@ -4222,11 +4281,11 @@ def write_complete_statistical_analysis(
         f.write(f"| exit_potential_mode | {exit_mode} |\n")
         f.write(f"| potential_gamma | {potential_gamma} |\n")
         # Additional configuration details
-        f.write(f"| max_trade_duration_candles | {max_trade_duration_candles} |\n")
+        f.write(f"| max_trade_duration_candles | {Decimal(max_trade_duration_candles)} |\n")
         max_idle_duration_candles = get_max_idle_duration_candles(
             reward_params, max_trade_duration_candles=max_trade_duration_candles
         )
-        f.write(f"| max_idle_duration_candles | {max_idle_duration_candles} |\n")
+        f.write(f"| max_idle_duration_candles | {Decimal(max_idle_duration_candles)} |\n")
         f.write(f"| strict_diagnostics | {strict_diagnostics} |\n")
         f.write(f"| skip_feature_analysis | {skip_feature_analysis} |\n")
         f.write(f"| skip_partial_dependence | {skip_partial_dependence} |\n")
@@ -4244,7 +4303,13 @@ def write_complete_statistical_analysis(
                     continue  # already printed explicitly
                 try:
                     if k in reward_params and reward_params[k] != default_v:
-                        overrides_pairs.append(f"{k}={reward_params[k]}")
+                        value = reward_params[k]
+                        rendered = (
+                            str(Decimal(int(value)))
+                            if isinstance(value, numbers.Integral) and not isinstance(value, bool)
+                            else str(value)
+                        )
+                        overrides_pairs.append(f"{k}={rendered}")
                 except Exception:
                     continue
         if overrides_pairs:

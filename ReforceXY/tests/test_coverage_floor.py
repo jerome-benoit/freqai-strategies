@@ -7,6 +7,7 @@ import subprocess
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from coverage.config import DEFAULT_EXCLUDE, DEFAULT_PARTIAL, DEFAULT_PARTIAL_ALWAYS, CoverageConfig
 from coverage.files import find_python_files
@@ -100,6 +101,18 @@ class CoverageFloorTest(QaTestCase):
         value = float(self._raw_floor())
         self.assertGreater(value, 0.0)
         self.assertLessEqual(value, 100.0)
+
+    def test_the_floor_carries_its_measurement_provenance(self):
+        """A recorded measurement must be dated, final, and sufficient for its floor."""
+        lines = [line.strip() for line in self.text.splitlines()]
+        index = next(i for i, line in enumerate(lines) if line.partition("=")[0].strip() == FLOOR)
+        annotation = " ".join(lines[max(0, index - 2) : index])
+        self.assertIn("measured", annotation)
+        self.assertNotIn("PROVISIONAL", annotation)
+        self.assertRegex(annotation, r"\d{4}-\d{2}-\d{2}")
+        found = re.search(r"measured[^%]*?([0-9]+(?:\.[0-9]+)?)%", annotation)
+        self.assertIsNotNone(found, "the floor must record the measurement it relies on")
+        self.assertGreaterEqual(float(found.group(1)), float(self._raw_floor()))
 
     def test_branch_tracing_is_enabled(self):
         # Without it, every guard — an early return, a raise — counts as covered the
@@ -278,6 +291,39 @@ class CoverageFloorTest(QaTestCase):
                     self.parser["run"],
                     f"run:{key} adds a measurement surface the gate does not account for",
                 )
+
+
+class CoverageProvenanceRegressionTest(QaTestCase):
+    def test_actual_guard_rejects_invalid_and_accepts_final_dated_measurements(self):
+        """Run the real guard against fixture files, including stale but valid provenance."""
+        baseline = COVERAGERC.read_text()
+        cases = (
+            ("", False),
+            ("# measured 76.0%", False),
+            ("# measured 2026-10-02", False),
+            ("# measured 2026-10-02 at 69.9%", False),
+            ("# measured 2026-10-02 at 76.0% PROVISIONAL", False),
+            ("# measured 2026-10-02 at 70.0%", True),
+            ("# measured 2026-10-02 at 76.0%", True),
+            ("# measured 2000-01-01 at 76.0%", True),
+        )
+        for annotation, valid in cases:
+            with self.subTest(annotation=annotation), temporary_directory() as directory:
+                fixture = directory / ".coveragerc"
+                fixture.write_text(
+                    "\n".join(
+                        annotation if line.startswith("# measured") else line
+                        for line in baseline.splitlines()
+                    )
+                )
+                result = unittest.TestResult()
+                with mock.patch.dict(globals(), COVERAGERC=fixture):
+                    CoverageFloorTest("test_the_floor_carries_its_measurement_provenance").run(
+                        result
+                    )
+                self.assertEqual(result.testsRun, 1)
+                self.assertEqual(result.errors, [])
+                self.assertEqual(len(result.failures), 0 if valid else 1)
 
 
 if __name__ == "__main__":

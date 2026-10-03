@@ -324,6 +324,17 @@ conversion to Python integers, without binary64 narrowing or a fixed-width cap.
 Adjustment metadata for finite native durations records the final normalized
 integer. Strict validation checks a numeric gamma in its native precision before
 normalizing it.
+Simulation consumes extended integer durations without a binary64 cap. Ordinary
+fractional duration caps retain float-product truncation; extended caps use the
+supplied ratio's exact rational value. Duration relationship tables keep candle
+units when their float bounds and labels are safe. At larger scales, the same
+12 right-closed uniform bins use exact assignment and explicitly declared
+`duration / max_trade_duration_candles` coordinates; the first bin includes zero.
+Report configuration retains exact integer durations without changing Python's
+integer-string digit limit. Non-finite explicit Python/NumPy trade-duration
+overrides in the idle-cap helper use the configured duration, then the canonical
+default; an explicit idle threshold retains precedence.
+
 Analysis-specific numeric string/bool coercion is retained; it does not replace
 the stricter runtime configuration contract. Direct gamma calculation falls back
 to 0.95 for invalid/non-finite input and clamps finite out-of-range values before
