@@ -31,10 +31,6 @@ for operations that require them. Review the timezone in
 [docker-compose.yml](docker-compose.yml) and the
 [API/security and maintenance guidance](../README.md#start-safely).
 
-The template uses JSON with comments. To enable optional `rateLimit` values in
-`exchange.ccxt_config` or `exchange.ccxt_async_config`, uncomment the complete
-example line, including its trailing comma. Keep `enableRateLimit` enabled.
-
 The supplied profile enables HPO, eight training environments and state
 observations. For a smaller first run, disable `freqai.rl_config_optuna.enabled`,
 use `n_envs=1` and `multiprocessing=false`; these are intentional overrides,
@@ -87,6 +83,12 @@ drawdown value 0.02 is not a replacement for reviewing that live risk limit.
 `frame_stacking=2`, `add_state_info=true`, holdout 0.333 and HPO enabled for
 100 trials with no timeout. Runtime fallbacks differ: one environment, no
 multiprocessing or stacking, HPO disabled and optional action statistics disabled.
+
+[RLAgentStrategy](user_data/strategies/RLAgentStrategy.py) adds log returns,
+volume, calendar and raw OHLC features, but does not implement a period-dependent
+`feature_engineering_expand_all()` callback. The supplied
+`freqai.feature_parameters.indicator_periods_candles=[8,16,32]` therefore adds
+no period-dependent indicators.
 
 Explicit configuration overrides schema defaults and constructor fallbacks. The
 tables distinguish those defaults and requirements from the supplied profile;
@@ -266,8 +268,10 @@ The implementation and runtime validation are in
 [ReforceXY.py](user_data/freqaimodels/ReforceXY.py); the supplied profile is
 [config-template.json](user_data/config-template.json). Expected types below
 are not promises of validation where the table says an option is forwarded or
-not locally validated. General exchange/FreqAI options use the
-[Freqtrade parameter reference](https://www.freqtrade.io/en/stable/freqai-parameter-table/).
+not locally validated. This guide covers ReforceXY behavior, overrides and SDK
+boundaries. For standard framework settings, use the
+[Freqtrade configuration reference](https://www.freqtrade.io/en/stable/configuration/)
+and the [FreqAI parameter reference](https://www.freqtrade.io/en/stable/freqai-parameter-table/).
 Reward formulas and tunable descriptions are in the [reward reference](reward_space_analysis/README.md#reward-tunables-reference); live environment defaults are defined by `ReforceXY.DEFAULT_*` and the native RL base.
 
 Normal Freqtrade startup injects declared JSON-schema defaults before the FreqAI

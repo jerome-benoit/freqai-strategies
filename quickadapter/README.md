@@ -162,9 +162,10 @@ in the current session keeps its in-memory score.
 Runtime validation and canonical fallback definitions live in
 [Utils.py](user_data/strategies/Utils.py) and
 [QuickAdapterRegressorV3.py](user_data/freqaimodels/QuickAdapterRegressorV3.py).
-General exchange/FreqAI settings remain governed by
-[Freqtrade's parameter reference][freqai-parameters]. The shipped JSON profile
-is the authoritative example of explicit overrides.
+This guide covers QuickAdapter behavior, overrides and SDK boundaries. The
+shipped JSON profile is the authoritative example of explicit overrides. For
+standard framework settings, use the [Freqtrade configuration reference][freqtrade-configuration]
+and the [FreqAI parameter reference][freqai-parameters].
 
 - [Protections](#protections)
 - [Leverage](#leverage)
@@ -342,6 +343,7 @@ is the authoritative example of explicit overrides.
 | freqai.optuna_hyperopt.reset_label_study_on_schema_mismatch | true             | bool                                   | Reset a persisted `label` study when its selection schema is missing, invalid, or incompatible. `true` performs a destructive reset, deleting the study before recreating it; `false` preserves its trials and stored metadata, permits caller-managed reuse in memory, and does not persist selected params until the schema is reconciled. Both fail closed: an inspection error, or (under `true`) a deletion error, aborts study creation. Has no effect when `continuous=true` or outside live/dry-run modes, where studies are always reset. |
 | freqai.optuna_hyperopt.vary_model_seed_by_trial             | true             | bool                                   | Add `trial.number` to each regressor's configured model seed (or its default seed of `1`) during HPO. `true` samples model randomness across trials; `false` evaluates every trial and the final fit with the same model seed. This does not change `freqai.optuna_hyperopt.seed`.                                                                                                                                                                                                                                                                 |
 
+[freqtrade-configuration]: https://www.freqtrade.io/en/stable/configuration/
 [freqai-parameters]: https://www.freqtrade.io/en/stable/freqai-parameter-table/#general-configuration-parameters
 [knn-density]: https://doi.org/10.1214/aoms/1177700079
 [silverman-density]: https://doi.org/10.1201/9781315140919
