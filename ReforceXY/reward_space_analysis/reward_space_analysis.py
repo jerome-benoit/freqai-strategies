@@ -4083,11 +4083,13 @@ def write_complete_statistical_analysis(
     importance_df = None
     analysis_stats = None
     partial_deps = {}
+    partial_dependence_placeholders = False
     if skip_feature_analysis or len(df) < 4:
         print("CLI: Skipping feature analysis; insufficient samples or flag set")
-        # Do NOT create feature_importance.csv when skipped (tests expect absence)
+        # Feature importance is unavailable when analysis is skipped.
         # Create minimal partial dependence placeholders only if feature analysis was NOT explicitly skipped
         if not skip_feature_analysis and not skip_partial_dependence:
+            partial_dependence_placeholders = True
             for feature in ["trade_duration", "idle_duration", "pnl"]:
                 (output_dir / f"partial_dependence_{feature}.csv").write_text(
                     f"{feature},partial_dependence\n", encoding="utf-8"
@@ -4112,12 +4114,14 @@ def write_complete_statistical_analysis(
                     )
             else:
                 # Create empty files to keep outputs stable
+                partial_dependence_placeholders = True
                 for feature in ["trade_duration", "idle_duration", "pnl"]:
                     (output_dir / f"partial_dependence_{feature}.csv").write_text(
                         f"{feature},partial_dependence\n", encoding="utf-8"
                     )
         except ImportError:
             print("CLI: Skipping feature analysis; scikit-learn unavailable")
+            partial_dependence_placeholders = True
             (output_dir / "feature_importance.csv").write_text(
                 "feature,importance_mean,importance_std\n", encoding="utf-8"
             )
@@ -4125,6 +4129,7 @@ def write_complete_statistical_analysis(
                 (output_dir / f"partial_dependence_{feature}.csv").write_text(
                     f"{feature},partial_dependence\n", encoding="utf-8"
                 )
+    computed_partial_dependence = any(not pd_df.empty for pd_df in partial_deps.values())
 
     # Enhanced statistics
     test_seed = (
@@ -4631,12 +4636,14 @@ def write_complete_statistical_analysis(
                 f.write(header + sep + "\n".join(rows) + "\n\n")
                 f.write("**Exported Data:**\n")
                 f.write("- Full feature importance: `feature_importance.csv`\n")
-                if not skip_partial_dependence:
-                    f.write("- Partial dependence plots: `partial_dependence_*.csv`\n\n")
-                else:
+                if computed_partial_dependence:
+                    f.write("- Computed partial dependence curves: `partial_dependence_*.csv`\n\n")
+                elif skip_partial_dependence:
                     f.write(
-                        "- Partial dependence plots: (skipped via --skip_partial_dependence)\n\n"
+                        "- Partial dependence: header-only placeholders (--skip_partial_dependence)\n\n"
                     )
+                else:
+                    f.write("- Partial dependence: no computed curves available\n\n")
 
         # Section 5: Statistical Analysis
         if hypothesis_tests or bootstrap_ci or dist_diagnostics or distribution_shift:
@@ -4797,8 +4804,25 @@ def write_complete_statistical_analysis(
         f.write("\n")
         f.write("**Generated Files:**\n")
         if not skip_feature_analysis and len(df) >= 4:
-            f.write("- `feature_importance.csv` - Complete feature importance rankings\n")
-            f.write("- `partial_dependence_*.csv` - Partial dependence data for visualization\n")
+            if importance_df is None or importance_df.empty:
+                f.write(
+                    "- `feature_importance.csv` - Header-only placeholder; feature analysis unavailable\n"
+                )
+            elif (
+                analysis_stats is not None
+                and analysis_stats["model_fitted"]
+                and np.isfinite(importance_df["importance_mean"]).all()
+                and np.isfinite(importance_df["importance_std"]).all()
+            ):
+                f.write("- `feature_importance.csv` - Complete feature importance rankings\n")
+            else:
+                f.write(
+                    "- `feature_importance.csv` - Importance estimates unavailable; feature rows retained\n"
+                )
+        if partial_dependence_placeholders:
+            f.write("- `partial_dependence_*.csv` - Header-only placeholders; no computed curves\n")
+        elif computed_partial_dependence:
+            f.write("- `partial_dependence_*.csv` - Computed curves for available features\n")
 
 
 def main() -> None:

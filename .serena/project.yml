@@ -1,4 +1,3 @@
-
 # the encoding used by text files in the project
 # For a list of possible encodings, see https://docs.python.org/3.11/library/codecs.html#standard-encodings
 encoding: "utf-8"
@@ -139,7 +138,7 @@ ls_additional_workspace_folders: []
 #     - "./subproject1"
 #     - "./subproject2"
 ls_workspace_folders:
-- .
+  - .
 
 # list of language servers to start when using the LSP backend; choose from:
 #   ada                    al                     angular                ansible                bash
@@ -178,7 +177,7 @@ ls_workspace_folders:
 # The first language server is the default language and the respective language server will be used as a fallback.
 # Note that when using the JetBrains backend, language servers are not used and this list is correspondingly ignored.
 language_servers:
-- python
+  - python
 
 # list of APIs (facades or facade methods, e.g. "lsp" or "lsp.get_diagnostics_for_symbol") to include in the REPL
 # that would otherwise be disabled (particularly optional methods, which are disabled by default).
