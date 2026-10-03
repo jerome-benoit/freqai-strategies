@@ -1,4 +1,4 @@
-"""Regressions for live observations, HPO options and historic prediction alignment."""
+"""Regressions for configuration, observations, HPO and prediction alignment."""
 
 import copy
 import math
