@@ -12,7 +12,6 @@ from unittest import mock
 
 import numpy as np
 import pandas as pd
-from freqtrade.configuration.load_config import load_config_file
 from freqtrade.enums import RunMode
 from freqtrade.freqai.data_drawer import FreqaiDataDrawer
 from freqtrade.freqai.data_kitchen import FreqaiDataKitchen
@@ -843,28 +842,3 @@ class ReviewContractsTest(unittest.TestCase):
         )
         exit_info = env.step(2)[-1]
         self.assertAlmostEqual(exit_info["reward_exit"], 0.0)
-
-
-class ConfigTemplateTest(unittest.TestCase):
-    def test_optional_ccxt_rate_limits_load_without_delimiter_edits(self):
-        """Uncommenting either or both examples preserves the remaining config."""
-        template = Path(__file__).resolve().parents[1] / "user_data/config-template.json"
-        source = template.read_text(encoding="utf-8")
-        baseline = load_config_file(str(template))
-        sections = ("ccxt_config", "ccxt_async_config")
-        for section in sections:
-            self.assertTrue(baseline["exchange"][section]["enableRateLimit"])
-            self.assertNotIn("rateLimit", baseline["exchange"][section])
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "config-template.json"
-            for enabled in ((), sections[:1], sections[1:], sections):
-                with self.subTest(enabled=enabled):
-                    text = source
-                    expected = copy.deepcopy(baseline)
-                    for section in enabled:
-                        start = text.index('"' + section + '":')
-                        marker = text.index("//", start)
-                        text = text[:marker] + text[marker + 2 :]
-                        expected["exchange"][section]["rateLimit"] = 60
-                    path.write_text(text, encoding="utf-8")
-                    self.assertEqual(load_config_file(str(path)), expected)

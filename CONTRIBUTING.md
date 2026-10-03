@@ -25,6 +25,13 @@ PYTHONPATH=/workspace/quickadapter/user_data/strategies \
   python -m unittest discover -s quickadapter/tests -v
 ```
 
+Each suite's `test_config_template.py` applies the
+[shared native assertion](scripts/config_template_contract.py) to its own shipped
+template. It checks the unchanged default and independent/joint activation of
+the two CCXT `rateLimit` examples. Only the selected comment markers are removed;
+the parsed configuration must otherwise remain unchanged. Example values are
+read from the template, not duplicated in the tests.
+
 Both commands must be run from the repository root, which is what the
 container's `--workdir /workspace` provides. To select one concern, pass a
 pattern that matches the whole `module.Class.method` name; a bare substring
