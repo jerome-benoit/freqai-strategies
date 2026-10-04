@@ -26,6 +26,7 @@ from Utils import (
 CANONICAL_EXIT_PRICING: dict[str, Any] = {
     "trade_natr_method": "moving_average",
     "final_take_profit_retracement_fraction": 0.25,
+    "take_profit_stage_fraction_series": "golden_ratio",
 }
 CANONICAL_PROTECTIONS: dict[str, Any] = {
     "trade_duration_candles": 72,

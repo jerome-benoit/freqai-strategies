@@ -1041,6 +1041,49 @@ TRADE_NATR_METHODS: Final[tuple[TradeNatrMethod, ...]] = (
 )
 
 
+TakeProfitStageFractionSeries = Literal["golden_ratio", "pi"]
+TAKE_PROFIT_STAGE_FRACTION_SERIES: Final[tuple[TakeProfitStageFractionSeries, ...]] = (
+    "golden_ratio",
+    "pi",
+)
+
+# Ladder bases: consecutive stage fractions satisfy ``fraction[k] ** 2 ==
+# base ** -k``, so the squared fractions form a geometric progression in the
+# ladder base and the final stage always resolves to exactly ``1.0``.
+_TAKE_PROFIT_STAGE_FRACTION_BASES: Final[dict[str, float]] = {
+    "golden_ratio": (1.0 + math.sqrt(5.0)) / 2.0,
+    "pi": math.pi,
+}
+
+
+@lru_cache(maxsize=_CACHE_MAXSIZE_SMALL)
+def get_take_profit_stage_fractions(series: str, partial_stage_count: int) -> tuple[float, ...]:
+    """Return the ``partial_stage_count`` partial ladder fractions of ``series``.
+
+    Fractions are ``base ** -(partial_stage_count - stage) / 2`` so that the
+    squared fractions follow a geometric ladder ending at the final stage,
+    whose multiplier is exactly ``1.0``. ``golden_ratio`` reproduces the
+    canonical 23.6 / 38.2 / 61.8 percent retracement ladder.
+    """
+    base = _TAKE_PROFIT_STAGE_FRACTION_BASES.get(series)
+    if base is None or base <= 1.0 or partial_stage_count < 0:
+        raise ValueError(
+            enum_error_message(
+                "take_profit_stage_fraction_series",
+                series,
+                TAKE_PROFIT_STAGE_FRACTION_SERIES,
+            )
+        )
+    fractions = tuple(
+        base ** (-(partial_stage_count - stage) / 2.0) for stage in range(partial_stage_count)
+    )
+    if any(not 0.0 < fraction < 1.0 for fraction in fractions):
+        raise ValueError(
+            f"Computed take-profit stage fractions are out of range for {series!r}: {fractions!r}"
+        )
+    return fractions
+
+
 SPARSE_TRAINING_MASS_THRESHOLD: Final[float] = 0.05
 
 DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES: Final[int] = 100
@@ -1441,6 +1484,7 @@ def get_label_prediction_config(
 DEFAULTS_EXIT_PRICING: Final[dict[str, Any]] = {
     "trade_natr_method": TRADE_NATR_METHODS[0],  # "moving_average"
     "final_take_profit_retracement_fraction": 0.25,
+    "take_profit_stage_fraction_series": TAKE_PROFIT_STAGE_FRACTION_SERIES[0],
 }
 
 _EXIT_PRICING_SPECS: Final[dict[str, _ParamSpec]] = {
@@ -1448,6 +1492,9 @@ _EXIT_PRICING_SPECS: Final[dict[str, _ParamSpec]] = {
     "final_take_profit_retracement_fraction": _ParamSpec(
         _NumericValidator(min_value=0, max_value=1, min_exclusive=True),
         output_type=float,
+    ),
+    "take_profit_stage_fraction_series": _ParamSpec(
+        _EnumValidator(TAKE_PROFIT_STAGE_FRACTION_SERIES), output_type=str
     ),
 }
 

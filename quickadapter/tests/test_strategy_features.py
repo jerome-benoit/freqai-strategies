@@ -3,6 +3,7 @@
 import datetime
 import math
 import unittest
+from itertools import pairwise
 from types import SimpleNamespace
 from unittest import mock
 
@@ -13,6 +14,7 @@ from EnumErrors import enum_error_message
 from numpy.testing import assert_allclose
 from qa_support import PAIR, QaTestCase
 from QuickAdapterV3 import QuickAdapterV3
+from Utils import TAKE_PROFIT_STAGE_FRACTION_SERIES, get_take_profit_stage_fractions
 
 LONG = QuickAdapterV3._TRADE_LONG
 SHORT = QuickAdapterV3._TRADE_SHORT
@@ -73,7 +75,7 @@ def candles(
     return frame
 
 
-def strategy(label_period_candles=4, label_natr_multiplier=MULTIPLIER):
+def strategy(label_period_candles=4, label_natr_multiplier=MULTIPLIER, fraction_series=None):
     """A candle-cache strategy whose label parameters come from the pair, not the frame."""
     model = object.__new__(QuickAdapterV3)
     model._candle_deviation_cache = {}
@@ -91,6 +93,8 @@ def strategy(label_period_candles=4, label_natr_multiplier=MULTIPLIER):
         "timeframe": TIMEFRAME,
         "exit_pricing": {"trade_natr_method": "quantile_interpolation"},
     }
+    if fraction_series is not None:
+        model.config["exit_pricing"]["take_profit_stage_fraction_series"] = fraction_series
     return model
 
 
@@ -529,10 +533,12 @@ class StrategyFeaturesTest(QaTestCase):
         long_trade = trade()
         # One candle of duration, a two-value trade NATR window and multiplier 3.0 make the
         # distance open_rate * 0.07 * 3.0 * fraction * log10(10), and log10(10) is exactly 1.
-        for stage, params in sorted(QuickAdapterV3.partial_exit_stages.items()):
+        for stage in sorted(QuickAdapterV3.partial_exit_stages):
             with self.subTest(stage=stage):
-                fraction = params[0]
+                fraction = model.partial_exit_stage_fractions[stage]
                 self.assertIsInstance(fraction, float)
+                self.assertGreater(fraction, 0.0)
+                self.assertLess(fraction, 1.0)
                 distance = 100.0 * 0.07 * MULTIPLIER * fraction
                 target = model.get_take_profit_target(frame, long_trade, stage)
                 self.assertIsNotNone(target)
@@ -552,6 +558,59 @@ class StrategyFeaturesTest(QaTestCase):
             for stage in (0, 1, 2, QuickAdapterV3._FINAL_EXIT_STAGE)
         ]
         self.assertEqual(stages, sorted(stages))
+
+    def test_the_fraction_series_ladder_is_geometric_in_its_squared_values(self):
+        """Each series squares to a geometric ladder terminating at the final stage."""
+        for series in TAKE_PROFIT_STAGE_FRACTION_SERIES:
+            with self.subTest(series=series):
+                model = strategy(fraction_series=series)
+                fractions = model.partial_exit_stage_fractions
+                self.assertEqual(len(fractions), len(QuickAdapterV3.partial_exit_stages))
+                self.assertTrue(all(0.0 < fraction < 1.0 for fraction in fractions))
+                self.assertEqual(fractions, tuple(sorted(fractions)))
+                # The squared fractions step by a constant base, and the final
+                # stage multiplier is exactly 1.0 for every series.
+                squared = [fraction**2 for fraction in fractions]
+                steps = [b / a for a, b in pairwise(squared)]
+                for step in steps[1:]:
+                    assert_allclose(step, steps[0], rtol=1e-9, atol=1e-9)
+                assert_allclose(steps[0] * squared[-1], 1.0, rtol=1e-9, atol=1e-9)
+                self.assertEqual(model.get_exit_stage_natr_fraction(99), 1.0)
+
+    def test_selecting_a_series_changes_the_stage_distances(self):
+        frame = candles([100.0, 100.0, 100.0], natr=[1.0, 4.0, 8.0], multiplier=MULTIPLIER)
+        long_trade = trade()
+        golden = strategy(fraction_series="golden_ratio")
+        pi = strategy(fraction_series="pi")
+        self.assertEqual(pi.take_profit_stage_fraction_series, "pi")
+        for stage in sorted(QuickAdapterV3.partial_exit_stages):
+            with self.subTest(stage=stage):
+                golden_distance = golden.get_take_profit_target(frame, long_trade, stage)[1]
+                pi_distance = pi.get_take_profit_target(frame, long_trade, stage)[1]
+                # pi > golden ratio, so its ladder decays faster and every partial
+                # stage is priced strictly closer than the golden-ratio ladder.
+                self.assertLess(pi_distance, golden_distance)
+        # The final stage is unaffected: both ladders terminate at 1.0.
+        self.assertEqual(
+            golden.get_take_profit_target(frame, long_trade, QuickAdapterV3._FINAL_EXIT_STAGE),
+            pi.get_take_profit_target(frame, long_trade, QuickAdapterV3._FINAL_EXIT_STAGE),
+        )
+
+    def test_an_unknown_fraction_series_is_rejected_with_the_enum_message(self):
+        with self.assertRaises(ValueError) as raised:
+            get_take_profit_stage_fractions("not_a_series", 3)
+        self.assertIn(
+            enum_error_message(
+                "take_profit_stage_fraction_series",
+                "not_a_series",
+                TAKE_PROFIT_STAGE_FRACTION_SERIES,
+            ),
+            str(raised.exception),
+        )
+        # An empty ladder is legitimate: a strategy without partial stages still
+        # resolves its final stage multiplier to exactly 1.0.
+        self.assertEqual(get_take_profit_stage_fractions("pi", 0), ())
+        self.assertEqual(get_take_profit_stage_fractions("pi", 1), (math.pi**-0.5,))
 
     def test_a_short_take_profit_target_flips_the_sign(self):
         model = strategy()

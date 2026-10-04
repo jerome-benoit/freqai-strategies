@@ -77,6 +77,7 @@ from Utils import (
     get_ma_fn,
     get_reversal_confirmation_config,
     get_smoothing_kernel_half_width,
+    get_take_profit_stage_fractions,
     is_finite_number,
     label_known_at_lookahead_column_name,
     label_weight_column_name,
@@ -228,11 +229,14 @@ class QuickAdapterV3(IStrategy):
 
     position_adjustment_enable = True
 
-    # {stage: (natr_multiplier_fraction, stake_percent, color)}
-    partial_exit_stages: ClassVar[dict[int, tuple[float, float, str]]] = {
-        0: (0.4858, 0.4, "lime"),
-        1: (0.6180, 0.3, "yellow"),
-        2: (0.7640, 0.2, "coral"),
+    # {stage: (stake_percent, color)}. The take-profit NATR fractions are not
+    # literals here: they resolve from the configured
+    # ``exit_pricing.take_profit_stage_fraction_series`` ladder, so the series
+    # stays the single source of truth for the whole ladder.
+    partial_exit_stages: ClassVar[dict[int, tuple[float, str]]] = {
+        0: (0.4, "lime"),
+        1: (0.3, "yellow"),
+        2: (0.2, "coral"),
     }
 
     # (natr_multiplier_fraction, stake_percent, color)
@@ -436,6 +440,23 @@ class QuickAdapterV3(IStrategy):
     def final_take_profit_retracement_fraction(self) -> float:
         return float(self.exit_pricing["final_take_profit_retracement_fraction"])
 
+    @property
+    def take_profit_stage_fraction_series(self) -> str:
+        return str(self.exit_pricing["take_profit_stage_fraction_series"])
+
+    @cached_property
+    def partial_exit_stage_fractions(self) -> tuple[float, ...]:
+        """Partial take-profit NATR multipliers resolved from the configured series."""
+        return get_take_profit_stage_fractions(
+            self.take_profit_stage_fraction_series, len(self.partial_exit_stages)
+        )
+
+    def get_exit_stage_natr_fraction(self, exit_stage: int) -> float:
+        """Return the NATR multiplier of ``exit_stage`` from the configured series."""
+        if exit_stage in self.partial_exit_stages:
+            return self.partial_exit_stage_fractions[exit_stage]
+        return self._FINAL_EXIT_STAGE_PARAMS[0]
+
     @cached_property
     def reversal_confirmation(self) -> dict[str, int | float]:
         return get_reversal_confirmation_config(self.config.get("reversal_confirmation"), logger)
@@ -623,14 +644,15 @@ class QuickAdapterV3(IStrategy):
             f"  natr_multiplier_fraction: {format_number(QuickAdapterV3._CUSTOM_STOPLOSS_NATR_MULTIPLIER_FRACTION)}"
         )
 
-        logger.info("Partial Take-Profit Stages:")
+        logger.info(f"Partial Take-Profit Stages: series={self.take_profit_stage_fraction_series}")
         for stage, (
-            natr_multiplier_fraction,
             stake_percent,
             color,
-        ) in QuickAdapterV3.partial_exit_stages.items():
+        ) in self.partial_exit_stages.items():
             logger.info(
-                f"  stage {stage}: natr_multiplier_fraction={format_number(natr_multiplier_fraction)}, stake_percent={format_number(stake_percent)}, color={color}"
+                f"  stage {stage}: natr_multiplier_fraction="
+                f"{format_number(self.get_exit_stage_natr_fraction(stage))}, "
+                f"stake_percent={format_number(stake_percent)}, color={color}"
             )
 
         logger.info(
@@ -1453,11 +1475,7 @@ class QuickAdapterV3(IStrategy):
     def get_take_profit_target(
         self, df: DataFrame, trade: Trade, exit_stage: int
     ) -> tuple[float, float] | None:
-        natr_multiplier_fraction = (
-            QuickAdapterV3.partial_exit_stages[exit_stage][0]
-            if exit_stage in QuickAdapterV3.partial_exit_stages
-            else QuickAdapterV3._FINAL_EXIT_STAGE_PARAMS[0]
-        )
+        natr_multiplier_fraction = self.get_exit_stage_natr_fraction(exit_stage)
         take_profit_distance = self.get_take_profit_distance(df, trade, natr_multiplier_fraction)
         if not is_finite_number(take_profit_distance) or take_profit_distance <= 0:
             return None
@@ -1880,7 +1898,7 @@ class QuickAdapterV3(IStrategy):
                 ),
             )
         if trade_partial_exit:
-            trade_stake_percent = QuickAdapterV3.partial_exit_stages[trade_exit_stage][1]
+            trade_stake_percent = QuickAdapterV3.partial_exit_stages[trade_exit_stage][0]
             trade_partial_stake_amount = trade_stake_percent * trade.stake_amount
             tag = (
                 f"{QuickAdapterV3._TAKE_PROFIT_ORDER_TAG_PREFIX}"
@@ -2550,7 +2568,7 @@ class QuickAdapterV3(IStrategy):
                     "end": end_date,
                     "y_start": partial_take_profit_price,
                     "y_end": partial_take_profit_price,
-                    "color": QuickAdapterV3.partial_exit_stages[take_profit_stage][2],
+                    "color": QuickAdapterV3.partial_exit_stages[take_profit_stage][1],
                     "line_style": "solid",
                     "width": 1,
                     "label": f"Partial Take-Profit Stage {take_profit_stage}",
