@@ -205,63 +205,7 @@ and the [FreqAI parameter reference][freqai-parameters].
 | -------------------------------------------------------------- | ---------------------- | ------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | exit_pricing.trade_natr_method                                 | `moving_average`       | enum {`moving_average`,`quantile_interpolation`,`weighted_average`} | Trade NATR (Normalized Average True Range) aggregation for stoploss and take-profit distances. `moving_average` uses KAMA to preserve nonnegative volatility. The stoploss never loosens, including after partial exits, and remains unchanged on order fills.                                                                                                                                                              |
 | exit_pricing.final_take_profit_retracement_fraction            | 0.5                    | float (0,1]                                                         | Fraction of the final take-profit target distance used as the frozen trailing retracement distance after the final target arms the exit. The final exit tracks the best subsequent per-candle rate and exits only after this material adverse move; elapsed stagnation alone does not exit. Plot annotations show only the current trail boundary from the candle that established it; earlier boundaries are not retained. |
-| exit_pricing.take_profit_stage_natr_multiplier_fraction_series | `fibonacci_extensions` | enum {`fibonacci_extensions`,`pi_extensions`}                       | Partial target fractions derived from reciprocal extension powers. See [Take-profit extension ladders](#take-profit-extension-ladders) for fractions, pricing and final-target behavior.                                                                                                                                                                                                                                    |
-
-#### Take-profit extension ladders
-
-The partial stages use reciprocals of extension factors, not extensions of the
-full target distance. For stage `k` of `n` partial stages:
-
-```text
-extension(k) = base ** (n - k)
-fraction(k) = 1 / extension(k)
-D_full(t) = open_rate * (trade_natr(t) / 100)
-            * label_natr_multiplier(t) * log10(9.75 + 0.25 * t)
-D_stage(k, t) = D_full(t) * fraction(k)
-```
-
-`t` is the trade duration in candles. NATR is expressed as a percentage; the
-entry price converts the amplitude to a price distance. The multiplier fraction
-is applied once, without an additional square or square root.
-
-| Series                 | Extension base            | Partial fractions, stages 0 / 1 / 2 |
-| ---------------------- | ------------------------- | ----------------------------------- |
-| `fibonacci_extensions` | `phi = (1 + sqrt(5)) / 2` | 0.236068 / 0.381966 / 0.618034      |
-| `pi_extensions`        | `pi`                      | 0.032252 / 0.101321 / 0.318310      |
-
-The three partial stages and their stake fractions are fixed strategy settings.
-Selecting a series changes target distances, not the stage count or stake fractions.
-
-Both series use integer powers: the three partial extension factors are
-`base**3`, `base**2` and `base`. The Fibonacci choice is not the integer
-Fibonacci sequence or the complete set of customary Fibonacci trading levels.
-The pi choice is a custom geometric construction, not a standard trading
-extension convention. All partial fractions are strictly below the separate
-final fraction `1.0`.
-
-Long targets are `open_rate + D_stage`; short targets are
-`open_rate - D_stage`. Partial exits trigger when the executable exit rate is
-at or beyond the target in the profitable direction, including equality.
-The final fraction `1.0` arms the trailing exit described by
-`final_take_profit_retracement_fraction`; reaching it does not close the trade
-immediately.
-
-Before the final trail arms, the distance is recalculated from trade NATR, the
-current label multiplier and elapsed duration. `D_full` is an adaptive volatility
-reference, not a fixed maximum movement, a statistical upper bound or a return
-forecast. Once armed, the final trail freezes its retracement distance.
-
-Select the pi alternative in the Freqtrade configuration:
-
-```json
-{
-  "exit_pricing": {
-    "take_profit_stage_natr_multiplier_fraction_series": "pi_extensions"
-  }
-}
-```
-
-An unsupported series produces a warning and uses the canonical default.
+| exit_pricing.take_profit_stage_natr_multiplier_fraction_series | `fibonacci_extensions` | enum {`fibonacci_extensions`,`pi_extensions`}                       | Partial target fractions of the full take-profit distance, from reciprocal integer powers of phi or pi. Stages 0–2: Fibonacci (0.236068, 0.381966, 0.618034); pi (0.032252, 0.101321, 0.318310). Pi is a custom geometric series, not a standard trading extension. Final target unchanged; invalid values warn and use the default.                                                                                        |
 
 ### Reversal confirmation
 
