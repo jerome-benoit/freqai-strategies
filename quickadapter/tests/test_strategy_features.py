@@ -3,6 +3,7 @@
 import datetime
 import math
 import unittest
+from itertools import pairwise
 from types import SimpleNamespace
 from unittest import mock
 
@@ -577,11 +578,16 @@ class StrategyFeaturesTest(QaTestCase):
     def test_every_series_raises_its_fraction_with_the_stage_index(self):
         for series in TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_SERIES:
             with self.subTest(series=series):
-                by_stage = strategy(
-                    fraction_series=series
-                ).partial_exit_stage_natr_multiplier_fractions
-                self.assertEqual(sorted(by_stage), list(by_stage))
-                self.assertEqual(sorted(by_stage), sorted(QuickAdapterV3.partial_exit_stages))
+                model = strategy(fraction_series=series)
+                # Stage fractions follow stage indices, not insertion order.
+                model.partial_exit_stages = dict(
+                    sorted(model.partial_exit_stages.items(), reverse=True)
+                )
+                by_stage = model.partial_exit_stage_natr_multiplier_fractions
+                stages = sorted(model.partial_exit_stages)
+                self.assertEqual(sorted(by_stage), stages)
+                for earlier, later in pairwise(stages):
+                    self.assertLess(by_stage[earlier], by_stage[later])
 
     def test_no_series_ladder_reaches_the_final_stage_fraction(self):
         for series in TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_SERIES:
@@ -669,7 +675,7 @@ class StrategyFeaturesTest(QaTestCase):
                 )
 
     def test_an_underflowing_ladder_is_refused_with_a_bounded_message(self):
-        # 650 rungs are still normal doubles for pi; the 651st underflows to 0.0.
+        # pi**-650 is the smallest positive subnormal; pi**-651 underflows to 0.0.
         self.assertEqual(len(get_take_profit_stage_natr_multiplier_fractions("pi", 650)), 650)
         with self.assertRaises(ValueError) as raised:
             get_take_profit_stage_natr_multiplier_fractions("pi", 651)

@@ -1060,11 +1060,8 @@ _TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_BASES: Final[dict[str, float]] = {
     "pi": math.pi,
 }
 
-# Smallest admissible ladder base. The rung closest to the final stage is
-# ``1 / base`` (m = 1), so its gap to ``1.0`` is ``1 - 1 / base``, independent of
-# the stage count and strictly increasing in the base. At 1.5 that gap is at
-# least 1/3, which keeps every partial rung materially distinct from the final
-# rung; a merely-representable base such as ``1 + 2**-52`` would collide with it.
+# The closest partial fraction is 1 / base; a 1.5 floor keeps it at most 2/3.
+# This relative gap does not guarantee distinct prices after rounding.
 _TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_MIN_BASE: Final[float] = 1.5
 
 
