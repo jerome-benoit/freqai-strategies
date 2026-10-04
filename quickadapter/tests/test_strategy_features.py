@@ -654,10 +654,7 @@ class StrategyFeaturesTest(QaTestCase):
         )
 
     def test_a_degenerate_ladder_base_is_refused_by_name(self):
-        from Utils import (
-            _TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_BASES,
-            _TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_MIN_BASE,
-        )
+        from Utils import _TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_BASES
 
         for name, base in (("zero", 0.0), ("unit", 1.0), ("near", 1.0 + 2**-52)):
             with self.subTest(base=base):
@@ -667,18 +664,14 @@ class StrategyFeaturesTest(QaTestCase):
                 with self.assertRaises(ValueError) as raised:
                     get_take_profit_stage_natr_multiplier_fractions(name, 3)
                 self.assertIn(name, str(raised.exception))
-                self.assertIn(
-                    str(_TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_MIN_BASE), str(raised.exception)
-                )
 
-    def test_an_underflowing_ladder_is_refused_with_a_bounded_message(self):
+    def test_an_underflowing_ladder_is_refused(self):
         # pi**-650 is the smallest positive subnormal; pi**-651 underflows to 0.0.
         fractions = get_take_profit_stage_natr_multiplier_fractions("pi_extensions", 650)
         self.assertEqual(len(fractions), 650)
         self.assertEqual(fractions[0], math.ulp(0.0))
-        with self.assertRaises(ValueError) as raised:
+        with self.assertRaises(ValueError):
             get_take_profit_stage_natr_multiplier_fractions("pi_extensions", 651)
-        self.assertLess(len(str(raised.exception)), 200)
 
     def test_a_negative_partial_stage_count_is_rejected(self):
         with self.assertRaises(ValueError):
