@@ -13,7 +13,10 @@ from EnumErrors import enum_error_message
 from numpy.testing import assert_allclose
 from qa_support import PAIR, QaTestCase
 from QuickAdapterV3 import QuickAdapterV3
-from Utils import TAKE_PROFIT_STAGE_FRACTION_SERIES, get_take_profit_stage_fractions
+from Utils import (
+    TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_SERIES,
+    get_take_profit_stage_natr_multiplier_fractions,
+)
 
 LONG = QuickAdapterV3._TRADE_LONG
 SHORT = QuickAdapterV3._TRADE_SHORT
@@ -93,7 +96,9 @@ def strategy(label_period_candles=4, label_natr_multiplier=MULTIPLIER, fraction_
         "exit_pricing": {"trade_natr_method": "quantile_interpolation"},
     }
     if fraction_series is not None:
-        model.config["exit_pricing"]["take_profit_stage_fraction_series"] = fraction_series
+        model.config["exit_pricing"]["take_profit_stage_natr_multiplier_fraction_series"] = (
+            fraction_series
+        )
     return model
 
 
@@ -534,7 +539,7 @@ class StrategyFeaturesTest(QaTestCase):
         # distance open_rate * 0.07 * 3.0 * fraction * log10(10), and log10(10) is exactly 1.
         for stage in sorted(QuickAdapterV3.partial_exit_stages):
             with self.subTest(stage=stage):
-                fraction = model.partial_exit_stage_fractions[stage]
+                fraction = model.partial_exit_stage_natr_multiplier_fractions[stage]
                 self.assertIsInstance(fraction, float)
                 self.assertGreater(fraction, 0.0)
                 self.assertLess(fraction, 1.0)
@@ -563,39 +568,45 @@ class StrategyFeaturesTest(QaTestCase):
         # base or of the stage count must fail here. They are phi**-3, phi**-2
         # and phi**-1 rounded to six decimals.
         assert_allclose(
-            tuple(strategy().partial_exit_stage_fractions.values()),
+            tuple(strategy().partial_exit_stage_natr_multiplier_fractions.values()),
             (0.236068, 0.381966, 0.618034),
             rtol=1e-6,
         )
         self.assertEqual(strategy().get_exit_stage_natr_multiplier_fraction(99), 1.0)
 
     def test_every_series_raises_its_fraction_with_the_stage_index(self):
-        for series in TAKE_PROFIT_STAGE_FRACTION_SERIES:
+        for series in TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_SERIES:
             with self.subTest(series=series):
-                by_stage = strategy(fraction_series=series).partial_exit_stage_fractions
+                by_stage = strategy(
+                    fraction_series=series
+                ).partial_exit_stage_natr_multiplier_fractions
                 self.assertEqual(sorted(by_stage), list(by_stage))
                 self.assertEqual(sorted(by_stage), sorted(QuickAdapterV3.partial_exit_stages))
 
     def test_no_series_ladder_reaches_the_final_stage_fraction(self):
-        for series in TAKE_PROFIT_STAGE_FRACTION_SERIES:
+        for series in TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_SERIES:
             with self.subTest(series=series):
                 fractions = tuple(
-                    strategy(fraction_series=series).partial_exit_stage_fractions.values()
+                    strategy(
+                        fraction_series=series
+                    ).partial_exit_stage_natr_multiplier_fractions.values()
                 )
                 self.assertNotIn(1.0, fractions)
                 self.assertEqual(max(fractions), fractions[-1])
 
     def test_the_ladder_is_indexed_by_the_stage_count(self):
-        self.assertEqual(len(get_take_profit_stage_fractions("golden_ratio", 0)), 0)
+        self.assertEqual(len(get_take_profit_stage_natr_multiplier_fractions("golden_ratio", 0)), 0)
         for count in (1, 2, 3, 4, 5):
             with self.subTest(count=count):
-                fractions = get_take_profit_stage_fractions("golden_ratio", count)
+                fractions = get_take_profit_stage_natr_multiplier_fractions("golden_ratio", count)
                 self.assertEqual(len(fractions), count)
                 self.assertEqual(max(fractions), fractions[-1])
 
     def test_the_pi_series_is_the_inverse_pi_ladder(self):
         assert_allclose(
-            tuple(strategy(fraction_series="pi").partial_exit_stage_fractions.values()),
+            tuple(
+                strategy(fraction_series="pi").partial_exit_stage_natr_multiplier_fractions.values()
+            ),
             (0.03225153, 0.10132118, 0.31830989),
             rtol=1e-6,
         )
@@ -605,7 +616,7 @@ class StrategyFeaturesTest(QaTestCase):
         long_trade = trade()
         golden = strategy(fraction_series="golden_ratio")
         pi = strategy(fraction_series="pi")
-        self.assertEqual(pi.take_profit_stage_fraction_series, "pi")
+        self.assertEqual(pi.take_profit_stage_natr_multiplier_fraction_series, "pi")
         for stage in sorted(QuickAdapterV3.partial_exit_stages):
             with self.subTest(stage=stage):
                 golden_distance = golden.get_take_profit_target(frame, long_trade, stage)[1]
@@ -623,46 +634,55 @@ class StrategyFeaturesTest(QaTestCase):
 
     def test_an_unknown_fraction_series_is_rejected_with_the_enum_message(self):
         with self.assertRaises(ValueError) as raised:
-            get_take_profit_stage_fractions("not_a_series", 3)
+            get_take_profit_stage_natr_multiplier_fractions("not_a_series", 3)
         self.assertIn(
             enum_error_message(
-                "take_profit_stage_fraction_series",
+                "take_profit_stage_natr_multiplier_fraction_series",
                 "not_a_series",
-                TAKE_PROFIT_STAGE_FRACTION_SERIES,
+                TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_SERIES,
             ),
             str(raised.exception),
         )
         # A single-stage ladder keeps the level adjacent to the 1.0 origin.
         phi = (1.0 + math.sqrt(5.0)) / 2.0
-        self.assertEqual(get_take_profit_stage_fractions("golden_ratio", 0), ())
-        self.assertEqual(get_take_profit_stage_fractions("golden_ratio", 1), (phi**-1,))
+        self.assertEqual(get_take_profit_stage_natr_multiplier_fractions("golden_ratio", 0), ())
+        self.assertEqual(
+            get_take_profit_stage_natr_multiplier_fractions("golden_ratio", 1), (phi**-1,)
+        )
 
     def test_a_degenerate_ladder_base_is_refused_by_name(self):
-        from Utils import _TAKE_PROFIT_STAGE_FRACTION_BASES, _TAKE_PROFIT_STAGE_MIN_BASE
+        from Utils import (
+            _TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_BASES,
+            _TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_MIN_BASE,
+        )
 
         for name, base in (("zero", 0.0), ("unit", 1.0), ("near", 1.0 + 2**-52)):
             with self.subTest(base=base):
-                _TAKE_PROFIT_STAGE_FRACTION_BASES[name] = base
-                self.addCleanup(_TAKE_PROFIT_STAGE_FRACTION_BASES.pop, name, None)
-                self.addCleanup(get_take_profit_stage_fractions.cache_clear)
+                _TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_BASES[name] = base
+                self.addCleanup(_TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_BASES.pop, name, None)
+                self.addCleanup(get_take_profit_stage_natr_multiplier_fractions.cache_clear)
                 with self.assertRaises(ValueError) as raised:
-                    get_take_profit_stage_fractions(name, 3)
+                    get_take_profit_stage_natr_multiplier_fractions(name, 3)
                 self.assertIn(name, str(raised.exception))
-                self.assertIn(str(_TAKE_PROFIT_STAGE_MIN_BASE), str(raised.exception))
+                self.assertIn(
+                    str(_TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_MIN_BASE), str(raised.exception)
+                )
 
     def test_an_underflowing_ladder_is_refused_with_a_bounded_message(self):
         # 650 rungs are still normal doubles for pi; the 651st underflows to 0.0.
-        self.assertEqual(len(get_take_profit_stage_fractions("pi", 650)), 650)
+        self.assertEqual(len(get_take_profit_stage_natr_multiplier_fractions("pi", 650)), 650)
         with self.assertRaises(ValueError) as raised:
-            get_take_profit_stage_fractions("pi", 651)
+            get_take_profit_stage_natr_multiplier_fractions("pi", 651)
         self.assertIn("underflows", str(raised.exception))
         self.assertLess(len(str(raised.exception)), 200)
 
     def test_a_negative_partial_stage_count_blames_the_count_not_the_series(self):
         with self.assertRaises(ValueError) as counted:
-            get_take_profit_stage_fractions("golden_ratio", -1)
+            get_take_profit_stage_natr_multiplier_fractions("golden_ratio", -1)
         self.assertIn("partial_stage_count", str(counted.exception))
-        self.assertNotIn("take_profit_stage_fraction_series", str(counted.exception))
+        self.assertNotIn(
+            "take_profit_stage_natr_multiplier_fraction_series", str(counted.exception)
+        )
 
     def test_a_short_take_profit_target_flips_the_sign(self):
         model = strategy()

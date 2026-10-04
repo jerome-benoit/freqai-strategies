@@ -1041,8 +1041,10 @@ TRADE_NATR_METHODS: Final[tuple[TradeNatrMethod, ...]] = (
 )
 
 
-TakeProfitStageFractionSeries = Literal["golden_ratio", "pi"]
-TAKE_PROFIT_STAGE_FRACTION_SERIES: Final[tuple[TakeProfitStageFractionSeries, ...]] = (
+TakeProfitStageNatrMultiplierFractionSeries = Literal["golden_ratio", "pi"]
+TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_SERIES: Final[
+    tuple[TakeProfitStageNatrMultiplierFractionSeries, ...]
+] = (
     "golden_ratio",
     "pi",
 )
@@ -1053,7 +1055,7 @@ TAKE_PROFIT_STAGE_FRACTION_SERIES: Final[tuple[TakeProfitStageFractionSeries, ..
 # literal. For the golden ratio these are the canonical 0.236 / 0.382 / 0.618
 # retracements. pi has no retracement or extension convention in trading; it is
 # offered as a geometric construct, not a trading standard.
-_TAKE_PROFIT_STAGE_FRACTION_BASES: Final[dict[str, float]] = {
+_TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_BASES: Final[dict[str, float]] = {
     "golden_ratio": (1.0 + math.sqrt(5.0)) / 2.0,
     "pi": math.pi,
 }
@@ -1063,32 +1065,34 @@ _TAKE_PROFIT_STAGE_FRACTION_BASES: Final[dict[str, float]] = {
 # the stage count and strictly increasing in the base. At 1.5 that gap is at
 # least 1/3, which keeps every partial rung materially distinct from the final
 # rung; a merely-representable base such as ``1 + 2**-52`` would collide with it.
-_TAKE_PROFIT_STAGE_MIN_BASE: Final[float] = 1.5
+_TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_MIN_BASE: Final[float] = 1.5
 
 
 @lru_cache(maxsize=_CACHE_MAXSIZE_SMALL)
-def get_take_profit_stage_fractions(series: str, partial_stage_count: int) -> tuple[float, ...]:
+def get_take_profit_stage_natr_multiplier_fractions(
+    series: str, partial_stage_count: int
+) -> tuple[float, ...]:
     """Return the partial NATR multiplier fractions of ``series``, ascending toward ``1.0``.
 
     These feed the ``natr_multiplier_fraction`` of :meth:`get_take_profit_distance`;
     every rung is strictly below ``1.0``, so the ``1.0`` final rung cannot come
     from here.
     """
-    base = _TAKE_PROFIT_STAGE_FRACTION_BASES.get(series)
+    base = _TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_BASES.get(series)
     if base is None:
         raise ValueError(
             enum_error_message(
-                "take_profit_stage_fraction_series",
+                "take_profit_stage_natr_multiplier_fraction_series",
                 series,
-                TAKE_PROFIT_STAGE_FRACTION_SERIES,
+                TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_SERIES,
             )
         )
     if partial_stage_count < 0:
         raise ValueError(f"Invalid partial_stage_count value {partial_stage_count}: must be >= 0")
-    if base < _TAKE_PROFIT_STAGE_MIN_BASE:
+    if base < _TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_MIN_BASE:
         raise ValueError(
             f"NATR multiplier ladder base for series {series!r} must be >= "
-            f"{_TAKE_PROFIT_STAGE_MIN_BASE}, got {base!r}"
+            f"{_TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_MIN_BASE}, got {base!r}"
         )
 
     fractions = tuple(
@@ -1504,7 +1508,9 @@ def get_label_prediction_config(
 DEFAULTS_EXIT_PRICING: Final[dict[str, Any]] = {
     "trade_natr_method": TRADE_NATR_METHODS[0],  # "moving_average"
     "final_take_profit_retracement_fraction": 0.25,
-    "take_profit_stage_fraction_series": TAKE_PROFIT_STAGE_FRACTION_SERIES[0],
+    "take_profit_stage_natr_multiplier_fraction_series": (
+        TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_SERIES[0]
+    ),
 }
 
 _EXIT_PRICING_SPECS: Final[dict[str, _ParamSpec]] = {
@@ -1513,8 +1519,8 @@ _EXIT_PRICING_SPECS: Final[dict[str, _ParamSpec]] = {
         _NumericValidator(min_value=0, max_value=1, min_exclusive=True),
         output_type=float,
     ),
-    "take_profit_stage_fraction_series": _ParamSpec(
-        _EnumValidator(TAKE_PROFIT_STAGE_FRACTION_SERIES), output_type=str
+    "take_profit_stage_natr_multiplier_fraction_series": _ParamSpec(
+        _EnumValidator(TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_SERIES), output_type=str
     ),
 }
 

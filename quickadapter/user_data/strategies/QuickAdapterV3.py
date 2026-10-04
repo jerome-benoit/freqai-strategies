@@ -77,7 +77,7 @@ from Utils import (
     get_ma_fn,
     get_reversal_confirmation_config,
     get_smoothing_kernel_half_width,
-    get_take_profit_stage_fractions,
+    get_take_profit_stage_natr_multiplier_fractions,
     is_finite_number,
     label_known_at_lookahead_column_name,
     label_weight_column_name,
@@ -231,8 +231,8 @@ class QuickAdapterV3(IStrategy):
 
     # {stage: (stake_percent, color)}. The partial NATR multiplier fractions are
     # not literals here: they resolve from the configured
-    # ``exit_pricing.take_profit_stage_fraction_series`` ladder, which is their
-    # single source of truth. The final rung stays the literal below.
+    # ``exit_pricing.take_profit_stage_natr_multiplier_fraction_series`` ladder,
+    # which is their single source of truth. The final rung stays the literal.
     partial_exit_stages: ClassVar[dict[int, tuple[float, str]]] = {
         0: (0.4, "lime"),
         1: (0.3, "yellow"),
@@ -446,20 +446,21 @@ class QuickAdapterV3(IStrategy):
         return float(self.exit_pricing["final_take_profit_retracement_fraction"])
 
     @property
-    def take_profit_stage_fraction_series(self) -> str:
-        return str(self.exit_pricing["take_profit_stage_fraction_series"])
+    def take_profit_stage_natr_multiplier_fraction_series(self) -> str:
+        return str(self.exit_pricing["take_profit_stage_natr_multiplier_fraction_series"])
 
     @cached_property
-    def partial_exit_stage_fractions(self) -> dict[int, float]:
+    def partial_exit_stage_natr_multiplier_fractions(self) -> dict[int, float]:
         """Partial take-profit NATR multiplier fractions, keyed by exit stage."""
-        fractions = get_take_profit_stage_fractions(
-            self.take_profit_stage_fraction_series, len(self.partial_exit_stages)
+        fractions = get_take_profit_stage_natr_multiplier_fractions(
+            self.take_profit_stage_natr_multiplier_fraction_series,
+            len(self.partial_exit_stages),
         )
         return dict(zip(sorted(self.partial_exit_stages), fractions, strict=True))
 
     def get_exit_stage_natr_multiplier_fraction(self, exit_stage: int) -> float:
         """Return the NATR multiplier fraction of ``exit_stage`` from the series."""
-        fractions = self.partial_exit_stage_fractions
+        fractions = self.partial_exit_stage_natr_multiplier_fractions
         if exit_stage in fractions:
             return fractions[exit_stage]
         return self._FINAL_EXIT_STAGE_PARAMS[0]
@@ -651,7 +652,10 @@ class QuickAdapterV3(IStrategy):
             f"  natr_multiplier_fraction: {format_number(QuickAdapterV3._CUSTOM_STOPLOSS_NATR_MULTIPLIER_FRACTION)}"
         )
 
-        logger.info(f"Partial Take-Profit Stages: series={self.take_profit_stage_fraction_series}")
+        logger.info(
+            "Partial Take-Profit Stages: "
+            f"series={self.take_profit_stage_natr_multiplier_fraction_series}"
+        )
         for stage, (
             stake_percent,
             color,

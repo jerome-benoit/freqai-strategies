@@ -26,7 +26,7 @@ from Utils import (
 CANONICAL_EXIT_PRICING: dict[str, Any] = {
     "trade_natr_method": "moving_average",
     "final_take_profit_retracement_fraction": 0.25,
-    "take_profit_stage_fraction_series": "golden_ratio",
+    "take_profit_stage_natr_multiplier_fraction_series": "golden_ratio",
 }
 CANONICAL_PROTECTIONS: dict[str, Any] = {
     "trade_duration_candles": 72,
@@ -115,12 +115,12 @@ class UtilsConfigResolutionTest(QaTestCase):
     def test_exit_pricing_unknown_fraction_series_falls_back_with_the_enum_message(self) -> None:
         with recorded_warnings() as (logger, sink):
             resolved = get_exit_pricing_config(
-                {"take_profit_stage_fraction_series": "nope"}, logger
+                {"take_profit_stage_natr_multiplier_fraction_series": "nope"}, logger
             )
         self.assertEqual(CANONICAL_EXIT_PRICING, resolved)
         self.assertEqual(
             [
-                "Invalid exit_pricing take_profit_stage_fraction_series value 'nope': supported "
+                "Invalid exit_pricing take_profit_stage_natr_multiplier_fraction_series value 'nope': supported "
                 "values are golden_ratio, pi, using default 'golden_ratio'"
             ],
             sink,
@@ -131,9 +131,11 @@ class UtilsConfigResolutionTest(QaTestCase):
             with self.subTest(series=series):
                 with recorded_warnings() as (logger, sink):
                     resolved = get_exit_pricing_config(
-                        {"take_profit_stage_fraction_series": series}, logger
+                        {"take_profit_stage_natr_multiplier_fraction_series": series}, logger
                     )
-                self.assertEqual(series, resolved["take_profit_stage_fraction_series"])
+                self.assertEqual(
+                    series, resolved["take_profit_stage_natr_multiplier_fraction_series"]
+                )
                 self.assertEqual([], sink)
 
     def test_exit_pricing_retracement_fraction_range_is_half_open_at_zero(self) -> None:
