@@ -1047,10 +1047,12 @@ TAKE_PROFIT_STAGE_FRACTION_SERIES: Final[tuple[TakeProfitStageFractionSeries, ..
     "pi",
 )
 
-# Retracement ladder bases: stage ``k`` uses ``base ** -(n - k)``, so the ladder
-# ends at exactly ``1.0``. For the golden ratio this is the canonical 0.236 /
-# 0.382 / 0.618 retracement set. pi has no retracement or extension convention
-# in trading; it is offered as a geometric construct, not a trading standard.
+# NATR multiplier ladder bases: stage ``k`` of ``n`` uses ``base ** -(n - k)``,
+# yielding the ``n`` deepest rungs of the ``1 / base**m`` family, all strictly
+# below ``1.0``. The final rung is the separate ``_FINAL_EXIT_STAGE_PARAMS``
+# literal. For the golden ratio these are the canonical 0.236 / 0.382 / 0.618
+# retracements. pi has no retracement or extension convention in trading; it is
+# offered as a geometric construct, not a trading standard.
 _TAKE_PROFIT_STAGE_FRACTION_BASES: Final[dict[str, float]] = {
     "golden_ratio": (1.0 + math.sqrt(5.0)) / 2.0,
     "pi": math.pi,
@@ -1059,9 +1061,14 @@ _TAKE_PROFIT_STAGE_FRACTION_BASES: Final[dict[str, float]] = {
 
 @lru_cache(maxsize=_CACHE_MAXSIZE_SMALL)
 def get_take_profit_stage_fractions(series: str, partial_stage_count: int) -> tuple[float, ...]:
-    """Return the partial ladder fractions of ``series``, ascending toward ``1.0``."""
+    """Return the partial NATR multiplier fractions of ``series``, ascending toward ``1.0``.
+
+    These feed the ``natr_multiplier_fraction`` of :meth:`get_take_profit_distance`;
+    every rung is strictly below ``1.0``, so the ``1.0`` final rung cannot come
+    from here.
+    """
     base = _TAKE_PROFIT_STAGE_FRACTION_BASES.get(series)
-    if base is None or base <= 1.0 or partial_stage_count < 0:
+    if base is None:
         raise ValueError(
             enum_error_message(
                 "take_profit_stage_fraction_series",
@@ -1069,12 +1076,17 @@ def get_take_profit_stage_fractions(series: str, partial_stage_count: int) -> tu
                 TAKE_PROFIT_STAGE_FRACTION_SERIES,
             )
         )
+    if partial_stage_count < 0:
+        raise ValueError(f"Invalid partial_stage_count value {partial_stage_count}: must be >= 0")
     fractions = tuple(
         base ** -(partial_stage_count - stage) for stage in range(partial_stage_count)
     )
     if any(not 0.0 < fraction < 1.0 for fraction in fractions):
+        # Underflow only: every rung is ``base ** -m`` with ``base > 1``, so the
+        # only reachable violation is a zero distance from denormal underflow.
         raise ValueError(
-            f"Computed take-profit stage fractions are out of range for {series!r}: {fractions!r}"
+            f"NATR multiplier ladder for series {series!r} underflows to a zero "
+            f"distance at {partial_stage_count} partial stages"
         )
     return fractions
 

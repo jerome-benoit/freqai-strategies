@@ -559,25 +559,30 @@ class StrategyFeaturesTest(QaTestCase):
         self.assertEqual(stages, sorted(stages))
 
     def test_the_golden_ratio_series_is_the_canonical_retracement_ladder(self):
-        phi = (1.0 + math.sqrt(5.0)) / 2.0
-        # stage k uses phi**-(n - k): the canonical 0.236 / 0.382 / 0.618 levels.
+        # Pinned to the documented retracement levels, not to the formula: adding a
+        # stage must not silently move the rungs a user already relies on.
         assert_allclose(
-            strategy(fraction_series="golden_ratio").partial_exit_stage_fractions,
-            (phi**-3, phi**-2, phi**-1),
+            tuple(strategy().partial_exit_stage_fractions.values()),
+            (0.236068, 0.381966, 0.618034),
+            rtol=1e-6,
         )
-        self.assertEqual(strategy().get_exit_stage_natr_fraction(99), 1.0)
+        self.assertEqual(list(strategy().partial_exit_stage_fractions), [0, 1, 2])
+        self.assertEqual(strategy().get_exit_stage_natr_multiplier_fraction(99), 1.0)
         for series in TAKE_PROFIT_STAGE_FRACTION_SERIES:
             with self.subTest(series=series):
-                fractions = strategy(fraction_series=series).partial_exit_stage_fractions
+                fractions = tuple(
+                    strategy(fraction_series=series).partial_exit_stage_fractions.values()
+                )
                 self.assertEqual(len(fractions), len(QuickAdapterV3.partial_exit_stages))
                 self.assertTrue(all(0.0 < fraction < 1.0 for fraction in fractions))
                 self.assertEqual(fractions, tuple(sorted(fractions)))
 
-    def test_the_pi_series_has_no_documented_convention(self):
-        """pi has no retracement convention; its ladder is a geometric construct."""
-        pi = strategy(fraction_series="pi").partial_exit_stage_fractions
-        assert_allclose(pi, tuple(math.pi ** -(3 - stage) for stage in range(3)))
-        self.assertTrue(all(0.0 < fraction < 1.0 for fraction in pi))
+    def test_the_pi_series_is_the_inverse_pi_ladder(self):
+        assert_allclose(
+            tuple(strategy(fraction_series="pi").partial_exit_stage_fractions.values()),
+            (0.03225153, 0.10132118, 0.31830989),
+            rtol=1e-6,
+        )
 
     def test_selecting_a_series_changes_the_stage_distances(self):
         frame = candles([100.0, 100.0, 100.0], natr=[1.0, 4.0, 8.0], multiplier=MULTIPLIER)
@@ -613,6 +618,12 @@ class StrategyFeaturesTest(QaTestCase):
         phi = (1.0 + math.sqrt(5.0)) / 2.0
         self.assertEqual(get_take_profit_stage_fractions("golden_ratio", 0), ())
         self.assertEqual(get_take_profit_stage_fractions("golden_ratio", 1), (phi**-1,))
+
+    def test_a_negative_partial_stage_count_blames_the_count_not_the_series(self):
+        with self.assertRaises(ValueError) as counted:
+            get_take_profit_stage_fractions("golden_ratio", -1)
+        self.assertIn("partial_stage_count", str(counted.exception))
+        self.assertNotIn("take_profit_stage_fraction_series", str(counted.exception))
 
     def test_a_short_take_profit_target_flips_the_sign(self):
         model = strategy()

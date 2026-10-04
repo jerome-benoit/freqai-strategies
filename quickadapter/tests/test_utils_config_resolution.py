@@ -112,6 +112,30 @@ class UtilsConfigResolutionTest(QaTestCase):
                 self.assertEqual(method, resolved["trade_natr_method"])
                 self.assertEqual([], sink)
 
+    def test_exit_pricing_unknown_fraction_series_falls_back_with_the_enum_message(self) -> None:
+        with recorded_warnings() as (logger, sink):
+            resolved = get_exit_pricing_config(
+                {"take_profit_stage_fraction_series": "nope"}, logger
+            )
+        self.assertEqual(CANONICAL_EXIT_PRICING, resolved)
+        self.assertEqual(
+            [
+                "Invalid exit_pricing take_profit_stage_fraction_series value 'nope': supported "
+                "values are golden_ratio, pi, using default 'golden_ratio'"
+            ],
+            sink,
+        )
+
+    def test_exit_pricing_every_supported_fraction_series_is_preserved(self) -> None:
+        for series in ("golden_ratio", "pi"):
+            with self.subTest(series=series):
+                with recorded_warnings() as (logger, sink):
+                    resolved = get_exit_pricing_config(
+                        {"take_profit_stage_fraction_series": series}, logger
+                    )
+                self.assertEqual(series, resolved["take_profit_stage_fraction_series"])
+                self.assertEqual([], sink)
+
     def test_exit_pricing_retracement_fraction_range_is_half_open_at_zero(self) -> None:
         with recorded_warnings() as (logger, sink):
             self.assertEqual(
