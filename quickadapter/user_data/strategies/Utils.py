@@ -1504,7 +1504,7 @@ def get_label_prediction_config(
 
 DEFAULTS_EXIT_PRICING: Final[dict[str, Any]] = {
     "trade_natr_method": TRADE_NATR_METHODS[0],  # "moving_average"
-    "final_take_profit_retracement_fraction": 0.25,
+    "final_take_profit_retracement_fraction": 0.5,
     "take_profit_stage_natr_multiplier_fraction_series": (
         TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_SERIES[0]
     ),
