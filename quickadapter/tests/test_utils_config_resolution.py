@@ -26,7 +26,7 @@ from Utils import (
 CANONICAL_EXIT_PRICING: dict[str, Any] = {
     "trade_natr_method": "moving_average",
     "final_take_profit_retracement_fraction": 0.25,
-    "take_profit_stage_natr_multiplier_fraction_series": "golden_ratio",
+    "take_profit_stage_natr_multiplier_fraction_series": "fibonacci_extensions",
 }
 CANONICAL_PROTECTIONS: dict[str, Any] = {
     "trade_duration_candles": 72,
@@ -124,7 +124,7 @@ class UtilsConfigResolutionTest(QaTestCase):
         self.assertEqual([logging.WARNING], [record.levelno for record in captured.records])
 
     def test_exit_pricing_every_supported_fraction_series_is_preserved(self) -> None:
-        for series in ("golden_ratio", "pi"):
+        for series in ("fibonacci_extensions", "pi_extensions"):
             with self.subTest(series=series):
                 with recorded_warnings() as (logger, sink):
                     resolved = get_exit_pricing_config(

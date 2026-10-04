@@ -229,7 +229,7 @@ class QuickAdapterV3(IStrategy):
 
     position_adjustment_enable = True
 
-    # {stage: (stake_percent, color)}. The partial NATR multiplier fractions are
+    # {stage: (stake_percent, color)}. The reciprocal-extension fractions are
     # not literals here: they resolve from the configured
     # ``exit_pricing.take_profit_stage_natr_multiplier_fraction_series`` ladder,
     # which is their single source of truth. The final rung stays the literal.
@@ -451,7 +451,7 @@ class QuickAdapterV3(IStrategy):
 
     @cached_property
     def partial_exit_stage_natr_multiplier_fractions(self) -> dict[int, float]:
-        """Partial take-profit NATR multiplier fractions, keyed by exit stage."""
+        """Reciprocal-extension fractions of the full take-profit distance, by stage."""
         fractions = get_take_profit_stage_natr_multiplier_fractions(
             self.take_profit_stage_natr_multiplier_fraction_series,
             len(self.partial_exit_stages),
@@ -459,7 +459,7 @@ class QuickAdapterV3(IStrategy):
         return dict(zip(sorted(self.partial_exit_stages), fractions, strict=True))
 
     def get_exit_stage_natr_multiplier_fraction(self, exit_stage: int) -> float:
-        """Return the NATR multiplier fraction of ``exit_stage`` from the series."""
+        """Return a partial reciprocal-extension fraction or the final fraction ``1.0``."""
         fractions = self.partial_exit_stage_natr_multiplier_fractions
         if exit_stage in fractions:
             return fractions[exit_stage]

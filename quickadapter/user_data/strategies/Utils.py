@@ -1041,23 +1041,23 @@ TRADE_NATR_METHODS: Final[tuple[TradeNatrMethod, ...]] = (
 )
 
 
-TakeProfitStageNatrMultiplierFractionSeries = Literal["golden_ratio", "pi"]
+TakeProfitStageNatrMultiplierFractionSeries = Literal["fibonacci_extensions", "pi_extensions"]
 TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_SERIES: Final[
     tuple[TakeProfitStageNatrMultiplierFractionSeries, ...]
 ] = (
-    "golden_ratio",
-    "pi",
+    "fibonacci_extensions",
+    "pi_extensions",
 )
 
-# NATR multiplier ladder bases: stage ``k`` of ``n`` uses ``base ** -(n - k)``,
-# yielding the ``n`` deepest rungs of the ``1 / base**m`` family, all strictly
-# below ``1.0``. The final rung is the separate ``_FINAL_EXIT_STAGE_PARAMS``
-# literal. For the golden ratio these are the canonical 0.236 / 0.382 / 0.618
-# retracements. pi has no retracement or extension convention in trading; it is
-# offered as a geometric construct, not a trading standard.
+# Extension bases: stage ``k`` of ``n`` uses the reciprocal of ``base ** (n - k)``.
+# These fractions place partial targets inside the full take-profit distance;
+# they do not extend it. Fibonacci uses integer powers of phi; pi uses integer
+# powers of pi as a custom geometric construction, not a trading convention.
+# The final fraction ``1.0`` is the separate ``_FINAL_EXIT_STAGE_PARAMS``
+# literal.
 _TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_BASES: Final[dict[str, float]] = {
-    "golden_ratio": (1.0 + math.sqrt(5.0)) / 2.0,
-    "pi": math.pi,
+    "fibonacci_extensions": (1.0 + math.sqrt(5.0)) / 2.0,
+    "pi_extensions": math.pi,
 }
 
 # The closest partial fraction is 1 / base; a 1.5 floor keeps it at most 2/3.
@@ -1069,11 +1069,11 @@ _TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_MIN_BASE: Final[float] = 1.5
 def get_take_profit_stage_natr_multiplier_fractions(
     series: str, partial_stage_count: int
 ) -> tuple[float, ...]:
-    """Return the partial NATR multiplier fractions of ``series``, ascending toward ``1.0``.
+    """Return ascending reciprocal-extension fractions for partial take-profit targets.
 
-    These feed the ``natr_multiplier_fraction`` of :meth:`get_take_profit_distance`;
-    every rung is strictly below ``1.0``, so the ``1.0`` final rung cannot come
-    from here.
+    Stage ``k`` of ``n`` uses ``1 / base ** (n - k)``. Each fraction scales
+    the full take-profit distance and remains strictly below the independent
+    final fraction ``1.0``.
     """
     base = _TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_BASES.get(series)
     if base is None:
