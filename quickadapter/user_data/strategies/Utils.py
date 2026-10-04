@@ -1088,8 +1088,8 @@ def get_take_profit_stage_natr_multiplier_fractions(
         raise ValueError(f"Invalid partial_stage_count value {partial_stage_count}: must be >= 0")
     if base < _TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_MIN_BASE:
         raise ValueError(
-            f"NATR multiplier ladder base for series {series!r} must be >= "
-            f"{_TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_MIN_BASE}, got {base!r}"
+            f"Invalid base value {base!r} for series {series!r}: "
+            f"must be >= {_TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_MIN_BASE}"
         )
 
     fractions = tuple(
@@ -1099,8 +1099,8 @@ def get_take_profit_stage_natr_multiplier_fractions(
         # Only reachable by denormal underflow: the base floor above guarantees
         # ``base > 1``, so no rung can reach or exceed ``1.0``.
         raise ValueError(
-            f"NATR multiplier ladder for series {series!r} underflows to a zero "
-            f"distance at {partial_stage_count} partial stages"
+            f"Invalid partial_stage_count value {partial_stage_count!r} for series {series!r}: "
+            "NATR multiplier fractions must be > 0 (underflow to zero)"
         )
     return fractions
 

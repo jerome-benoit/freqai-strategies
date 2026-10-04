@@ -646,16 +646,17 @@ class QuickAdapterV3(IStrategy):
             "  final_take_profit_retracement_fraction: "
             f"{format_number(self.final_take_profit_retracement_fraction)}"
         )
+        logger.info(
+            "  take_profit_stage_natr_multiplier_fraction_series: "
+            f"{self.take_profit_stage_natr_multiplier_fraction_series}"
+        )
 
         logger.info("Custom Stoploss:")
         logger.info(
             f"  natr_multiplier_fraction: {format_number(QuickAdapterV3._CUSTOM_STOPLOSS_NATR_MULTIPLIER_FRACTION)}"
         )
 
-        logger.info(
-            "Partial Take-Profit Stages: "
-            f"series={self.take_profit_stage_natr_multiplier_fraction_series}"
-        )
+        logger.info("Partial Take-Profit Stages:")
         for stage, (
             stake_percent,
             color,
