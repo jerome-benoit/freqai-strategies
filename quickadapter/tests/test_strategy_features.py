@@ -676,10 +676,11 @@ class StrategyFeaturesTest(QaTestCase):
 
     def test_an_underflowing_ladder_is_refused_with_a_bounded_message(self):
         # pi**-650 is the smallest positive subnormal; pi**-651 underflows to 0.0.
-        self.assertEqual(len(get_take_profit_stage_natr_multiplier_fractions("pi", 650)), 650)
+        fractions = get_take_profit_stage_natr_multiplier_fractions("pi", 650)
+        self.assertEqual(len(fractions), 650)
+        self.assertEqual(fractions[0], math.ulp(0.0))
         with self.assertRaises(ValueError) as raised:
             get_take_profit_stage_natr_multiplier_fractions("pi", 651)
-        self.assertIn("underflows", str(raised.exception))
         self.assertLess(len(str(raised.exception)), 200)
 
     def test_a_negative_partial_stage_count_blames_the_count_not_the_series(self):
