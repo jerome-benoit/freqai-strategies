@@ -454,16 +454,16 @@ class QuickAdapterV3(IStrategy):
         """Reciprocal-extension fractions of the full take-profit distance, by stage."""
         fractions = get_take_profit_stage_natr_multiplier_fractions(
             self.take_profit_stage_natr_multiplier_fraction_series,
-            len(self.partial_exit_stages),
+            len(QuickAdapterV3.partial_exit_stages),
         )
-        return dict(zip(sorted(self.partial_exit_stages), fractions, strict=True))
+        return dict(zip(sorted(QuickAdapterV3.partial_exit_stages), fractions, strict=True))
 
     def get_exit_stage_natr_multiplier_fraction(self, exit_stage: int) -> float:
         """Return a partial reciprocal-extension fraction or the final fraction ``1.0``."""
         fractions = self.partial_exit_stage_natr_multiplier_fractions
         if exit_stage in fractions:
             return fractions[exit_stage]
-        return self._FINAL_EXIT_STAGE_PARAMS[0]
+        return QuickAdapterV3._FINAL_EXIT_STAGE_PARAMS[0]
 
     @cached_property
     def reversal_confirmation(self) -> dict[str, int | float]:
@@ -659,7 +659,7 @@ class QuickAdapterV3(IStrategy):
         for stage, (
             stake_percent,
             color,
-        ) in self.partial_exit_stages.items():
+        ) in QuickAdapterV3.partial_exit_stages.items():
             logger.info(
                 f"  stage {stage}: natr_multiplier_fraction="
                 f"{format_number(self.get_exit_stage_natr_multiplier_fraction(stage))}, "

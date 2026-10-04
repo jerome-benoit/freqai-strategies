@@ -578,16 +578,17 @@ class StrategyFeaturesTest(QaTestCase):
     def test_every_series_raises_its_fraction_with_the_stage_index(self):
         for series in TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_SERIES:
             with self.subTest(series=series):
-                model = strategy(fraction_series=series)
                 # Stage fractions follow stage indices, not insertion order.
-                model.partial_exit_stages = dict(
-                    sorted(model.partial_exit_stages.items(), reverse=True)
+                reordered_stages = dict(
+                    sorted(QuickAdapterV3.partial_exit_stages.items(), reverse=True)
                 )
-                by_stage = model.partial_exit_stage_natr_multiplier_fractions
-                stages = sorted(model.partial_exit_stages)
-                self.assertEqual(sorted(by_stage), stages)
-                for earlier, later in pairwise(stages):
-                    self.assertLess(by_stage[earlier], by_stage[later])
+                with mock.patch.object(QuickAdapterV3, "partial_exit_stages", reordered_stages):
+                    model = strategy(fraction_series=series)
+                    by_stage = model.partial_exit_stage_natr_multiplier_fractions
+                    stages = sorted(QuickAdapterV3.partial_exit_stages)
+                    self.assertEqual(sorted(by_stage), stages)
+                    for earlier, later in pairwise(stages):
+                        self.assertLess(by_stage[earlier], by_stage[later])
 
     def test_no_series_ladder_reaches_the_final_stage_fraction(self):
         for series in TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_SERIES:

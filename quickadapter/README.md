@@ -229,6 +229,9 @@ is applied once, without an additional square or square root.
 | `fibonacci_extensions` | `phi = (1 + sqrt(5)) / 2` | 0.236068 / 0.381966 / 0.618034      |
 | `pi_extensions`        | `pi`                      | 0.032252 / 0.101321 / 0.318310      |
 
+The three partial stages and their stake fractions are fixed strategy settings.
+Selecting a series changes target distances, not the stage count or stake fractions.
+
 Both series use integer powers: the three partial extension factors are
 `base**3`, `base**2` and `base`. The Fibonacci choice is not the integer
 Fibonacci sequence or the complete set of customary Fibonacci trading levels.
