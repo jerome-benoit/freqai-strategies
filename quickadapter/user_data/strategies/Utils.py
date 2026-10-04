@@ -1058,6 +1058,13 @@ _TAKE_PROFIT_STAGE_FRACTION_BASES: Final[dict[str, float]] = {
     "pi": math.pi,
 }
 
+# Smallest admissible ladder base. The rung closest to the final stage is
+# ``1 / base`` (m = 1), so its gap to ``1.0`` is ``1 - 1 / base``, independent of
+# the stage count and strictly increasing in the base. At 1.5 that gap is at
+# least 1/3, which keeps every partial rung materially distinct from the final
+# rung; a merely-representable base such as ``1 + 2**-52`` would collide with it.
+_TAKE_PROFIT_STAGE_MIN_BASE: Final[float] = 1.5
+
 
 @lru_cache(maxsize=_CACHE_MAXSIZE_SMALL)
 def get_take_profit_stage_fractions(series: str, partial_stage_count: int) -> tuple[float, ...]:
@@ -1078,12 +1085,18 @@ def get_take_profit_stage_fractions(series: str, partial_stage_count: int) -> tu
         )
     if partial_stage_count < 0:
         raise ValueError(f"Invalid partial_stage_count value {partial_stage_count}: must be >= 0")
+    if base < _TAKE_PROFIT_STAGE_MIN_BASE:
+        raise ValueError(
+            f"NATR multiplier ladder base for series {series!r} must be >= "
+            f"{_TAKE_PROFIT_STAGE_MIN_BASE}, got {base!r}"
+        )
+
     fractions = tuple(
         base ** -(partial_stage_count - stage) for stage in range(partial_stage_count)
     )
-    if any(not 0.0 < fraction < 1.0 for fraction in fractions):
-        # Underflow only: every rung is ``base ** -m`` with ``base > 1``, so the
-        # only reachable violation is a zero distance from denormal underflow.
+    if any(fraction <= 0.0 for fraction in fractions):
+        # Only reachable by denormal underflow: the base floor above guarantees
+        # ``base > 1``, so no rung can reach or exceed ``1.0``.
         raise ValueError(
             f"NATR multiplier ladder for series {series!r} underflows to a zero "
             f"distance at {partial_stage_count} partial stages"

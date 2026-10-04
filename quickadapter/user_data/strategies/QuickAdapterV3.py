@@ -249,6 +249,11 @@ class QuickAdapterV3(IStrategy):
     # Final full-exit stage, derived from the configured partial exits.
     _FINAL_EXIT_STAGE: Final[int] = max(partial_exit_stages.keys(), default=-1) + 1
 
+    # ``get_trade_exit_stage`` derives a stage from the number of filled take-profit
+    # exits, so every stage it can reach must exist here. A gap would price a
+    # missing stage at the final rung instead of arming it.
+    assert sorted(partial_exit_stages) == list(range(len(partial_exit_stages)))
+
     _TAKE_PROFIT_ORDER_TAG_PREFIX: Final[str] = "take_profit_"
     _FINAL_TAKE_PROFIT_STATE_KEY: Final[str] = "final_take_profit_state"
     _FINAL_TAKE_PROFIT_STATE_VERSION: Final[int] = 3
@@ -450,7 +455,7 @@ class QuickAdapterV3(IStrategy):
         fractions = get_take_profit_stage_fractions(
             self.take_profit_stage_fraction_series, len(self.partial_exit_stages)
         )
-        return dict(zip(self.partial_exit_stages, fractions, strict=True))
+        return dict(zip(sorted(self.partial_exit_stages), fractions, strict=True))
 
     def get_exit_stage_natr_multiplier_fraction(self, exit_stage: int) -> float:
         """Return the NATR multiplier fraction of ``exit_stage`` from the series."""

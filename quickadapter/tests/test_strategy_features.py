@@ -559,23 +559,39 @@ class StrategyFeaturesTest(QaTestCase):
         self.assertEqual(stages, sorted(stages))
 
     def test_the_golden_ratio_series_is_the_canonical_retracement_ladder(self):
-        # Pinned to the documented retracement levels, not to the formula: adding a
-        # stage must not silently move the rungs a user already relies on.
+        # Frozen reference rungs, not a restatement of the formula: a change of
+        # base or of the stage count must fail here. They are phi**-3, phi**-2
+        # and phi**-1 rounded to six decimals.
         assert_allclose(
             tuple(strategy().partial_exit_stage_fractions.values()),
             (0.236068, 0.381966, 0.618034),
             rtol=1e-6,
         )
-        self.assertEqual(list(strategy().partial_exit_stage_fractions), [0, 1, 2])
         self.assertEqual(strategy().get_exit_stage_natr_multiplier_fraction(99), 1.0)
+
+    def test_every_series_raises_its_fraction_with_the_stage_index(self):
+        for series in TAKE_PROFIT_STAGE_FRACTION_SERIES:
+            with self.subTest(series=series):
+                by_stage = strategy(fraction_series=series).partial_exit_stage_fractions
+                self.assertEqual(sorted(by_stage), list(by_stage))
+                self.assertEqual(sorted(by_stage), sorted(QuickAdapterV3.partial_exit_stages))
+
+    def test_no_series_ladder_reaches_the_final_stage_fraction(self):
         for series in TAKE_PROFIT_STAGE_FRACTION_SERIES:
             with self.subTest(series=series):
                 fractions = tuple(
                     strategy(fraction_series=series).partial_exit_stage_fractions.values()
                 )
-                self.assertEqual(len(fractions), len(QuickAdapterV3.partial_exit_stages))
-                self.assertTrue(all(0.0 < fraction < 1.0 for fraction in fractions))
-                self.assertEqual(fractions, tuple(sorted(fractions)))
+                self.assertNotIn(1.0, fractions)
+                self.assertEqual(max(fractions), fractions[-1])
+
+    def test_the_ladder_is_indexed_by_the_stage_count(self):
+        self.assertEqual(len(get_take_profit_stage_fractions("golden_ratio", 0)), 0)
+        for count in (1, 2, 3, 4, 5):
+            with self.subTest(count=count):
+                fractions = get_take_profit_stage_fractions("golden_ratio", count)
+                self.assertEqual(len(fractions), count)
+                self.assertEqual(max(fractions), fractions[-1])
 
     def test_the_pi_series_is_the_inverse_pi_ladder(self):
         assert_allclose(
@@ -597,7 +613,9 @@ class StrategyFeaturesTest(QaTestCase):
                 # pi > golden ratio, so its ladder decays faster and every partial
                 # stage is priced strictly closer than the golden-ratio ladder.
                 self.assertLess(pi_distance, golden_distance)
-        # The final stage is unaffected: both ladders terminate at 1.0.
+        # Neither ladder reaches 1.0 (0.618034 golden, 0.318310 pi): both
+        # strategies read the same series-independent `_FINAL_EXIT_STAGE_PARAMS`
+        # literal, the only 1.0 rung.
         self.assertEqual(
             golden.get_take_profit_target(frame, long_trade, QuickAdapterV3._FINAL_EXIT_STAGE),
             pi.get_take_profit_target(frame, long_trade, QuickAdapterV3._FINAL_EXIT_STAGE),
@@ -618,6 +636,27 @@ class StrategyFeaturesTest(QaTestCase):
         phi = (1.0 + math.sqrt(5.0)) / 2.0
         self.assertEqual(get_take_profit_stage_fractions("golden_ratio", 0), ())
         self.assertEqual(get_take_profit_stage_fractions("golden_ratio", 1), (phi**-1,))
+
+    def test_a_degenerate_ladder_base_is_refused_by_name(self):
+        from Utils import _TAKE_PROFIT_STAGE_FRACTION_BASES, _TAKE_PROFIT_STAGE_MIN_BASE
+
+        for name, base in (("zero", 0.0), ("unit", 1.0), ("near", 1.0 + 2**-52)):
+            with self.subTest(base=base):
+                _TAKE_PROFIT_STAGE_FRACTION_BASES[name] = base
+                self.addCleanup(_TAKE_PROFIT_STAGE_FRACTION_BASES.pop, name, None)
+                self.addCleanup(get_take_profit_stage_fractions.cache_clear)
+                with self.assertRaises(ValueError) as raised:
+                    get_take_profit_stage_fractions(name, 3)
+                self.assertIn(name, str(raised.exception))
+                self.assertIn(str(_TAKE_PROFIT_STAGE_MIN_BASE), str(raised.exception))
+
+    def test_an_underflowing_ladder_is_refused_with_a_bounded_message(self):
+        # 650 rungs are still normal doubles for pi; the 651st underflows to 0.0.
+        self.assertEqual(len(get_take_profit_stage_fractions("pi", 650)), 650)
+        with self.assertRaises(ValueError) as raised:
+            get_take_profit_stage_fractions("pi", 651)
+        self.assertIn("underflows", str(raised.exception))
+        self.assertLess(len(str(raised.exception)), 200)
 
     def test_a_negative_partial_stage_count_blames_the_count_not_the_series(self):
         with self.assertRaises(ValueError) as counted:
