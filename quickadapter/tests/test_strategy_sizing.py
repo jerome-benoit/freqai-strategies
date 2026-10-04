@@ -295,9 +295,13 @@ class RuntimeSizingTest(QaTestCase):
                 )
 
     def test_partial_exit_reduces_stake_after_the_real_target_is_crossed(self):
-        for short, favorable, unfavorable in ((False, 120.0, 105.0), (True, 80.0, 95.0)):
+        for short in (False, True):
             with self.subTest(short=short):
                 position = self.position(short)
+                target = self.model.get_take_profit_target(self.frame, position, 0)[0]
+                # Priced off the resolved target so the ladder remains a free parameter.
+                crossed = target + (-1.0 if short else 1.0)
+                below = position.open_rate
                 store = {}
                 # Isolate only database persistence, not target or sizing calculations.
                 with (
@@ -315,12 +319,12 @@ class RuntimeSizingTest(QaTestCase):
                     before = self.model.adjust_trade_position(
                         position,
                         self.now,
-                        favorable,
+                        below,
                         0.2,
                         1.0,
                         1000.0,
-                        favorable,
-                        unfavorable,
+                        below,
+                        below,
                         0.2,
                         0.2,
                     )
@@ -328,12 +332,12 @@ class RuntimeSizingTest(QaTestCase):
                     after = self.model.adjust_trade_position(
                         position,
                         self.now,
-                        unfavorable,
+                        crossed,
                         0.2,
                         1.0,
                         1000.0,
-                        unfavorable,
-                        favorable,
+                        crossed,
+                        crossed,
                         0.2,
                         0.2,
                     )

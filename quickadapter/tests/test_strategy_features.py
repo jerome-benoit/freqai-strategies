@@ -3,7 +3,6 @@
 import datetime
 import math
 import unittest
-from itertools import pairwise
 from types import SimpleNamespace
 from unittest import mock
 
@@ -559,23 +558,26 @@ class StrategyFeaturesTest(QaTestCase):
         ]
         self.assertEqual(stages, sorted(stages))
 
-    def test_the_fraction_series_ladder_is_geometric_in_its_squared_values(self):
-        """Each series squares to a geometric ladder terminating at the final stage."""
+    def test_the_golden_ratio_series_is_the_canonical_retracement_ladder(self):
+        phi = (1.0 + math.sqrt(5.0)) / 2.0
+        # stage k uses phi**-(n - k): the canonical 0.236 / 0.382 / 0.618 levels.
+        assert_allclose(
+            strategy(fraction_series="golden_ratio").partial_exit_stage_fractions,
+            (phi**-3, phi**-2, phi**-1),
+        )
+        self.assertEqual(strategy().get_exit_stage_natr_fraction(99), 1.0)
         for series in TAKE_PROFIT_STAGE_FRACTION_SERIES:
             with self.subTest(series=series):
-                model = strategy(fraction_series=series)
-                fractions = model.partial_exit_stage_fractions
+                fractions = strategy(fraction_series=series).partial_exit_stage_fractions
                 self.assertEqual(len(fractions), len(QuickAdapterV3.partial_exit_stages))
                 self.assertTrue(all(0.0 < fraction < 1.0 for fraction in fractions))
                 self.assertEqual(fractions, tuple(sorted(fractions)))
-                # The squared fractions step by a constant base, and the final
-                # stage multiplier is exactly 1.0 for every series.
-                squared = [fraction**2 for fraction in fractions]
-                steps = [b / a for a, b in pairwise(squared)]
-                for step in steps[1:]:
-                    assert_allclose(step, steps[0], rtol=1e-9, atol=1e-9)
-                assert_allclose(steps[0] * squared[-1], 1.0, rtol=1e-9, atol=1e-9)
-                self.assertEqual(model.get_exit_stage_natr_fraction(99), 1.0)
+
+    def test_the_pi_series_has_no_documented_convention(self):
+        """pi has no retracement convention; its ladder is a geometric construct."""
+        pi = strategy(fraction_series="pi").partial_exit_stage_fractions
+        assert_allclose(pi, tuple(math.pi ** -(3 - stage) for stage in range(3)))
+        self.assertTrue(all(0.0 < fraction < 1.0 for fraction in pi))
 
     def test_selecting_a_series_changes_the_stage_distances(self):
         frame = candles([100.0, 100.0, 100.0], natr=[1.0, 4.0, 8.0], multiplier=MULTIPLIER)
@@ -607,10 +609,10 @@ class StrategyFeaturesTest(QaTestCase):
             ),
             str(raised.exception),
         )
-        # An empty ladder is legitimate: a strategy without partial stages still
-        # resolves its final stage multiplier to exactly 1.0.
-        self.assertEqual(get_take_profit_stage_fractions("pi", 0), ())
-        self.assertEqual(get_take_profit_stage_fractions("pi", 1), (math.pi**-0.5,))
+        # A single-stage ladder keeps the level adjacent to the 1.0 origin.
+        phi = (1.0 + math.sqrt(5.0)) / 2.0
+        self.assertEqual(get_take_profit_stage_fractions("golden_ratio", 0), ())
+        self.assertEqual(get_take_profit_stage_fractions("golden_ratio", 1), (phi**-1,))
 
     def test_a_short_take_profit_target_flips_the_sign(self):
         model = strategy()

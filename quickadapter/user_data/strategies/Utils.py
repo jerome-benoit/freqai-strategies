@@ -1047,9 +1047,10 @@ TAKE_PROFIT_STAGE_FRACTION_SERIES: Final[tuple[TakeProfitStageFractionSeries, ..
     "pi",
 )
 
-# Ladder bases: consecutive stage fractions satisfy ``fraction[k] ** 2 ==
-# base ** -k``, so the squared fractions form a geometric progression in the
-# ladder base and the final stage always resolves to exactly ``1.0``.
+# Retracement ladder bases: stage ``k`` uses ``base ** -(n - k)``, so the ladder
+# ends at exactly ``1.0``. For the golden ratio this is the canonical 0.236 /
+# 0.382 / 0.618 retracement set. pi has no retracement or extension convention
+# in trading; it is offered as a geometric construct, not a trading standard.
 _TAKE_PROFIT_STAGE_FRACTION_BASES: Final[dict[str, float]] = {
     "golden_ratio": (1.0 + math.sqrt(5.0)) / 2.0,
     "pi": math.pi,
@@ -1058,13 +1059,7 @@ _TAKE_PROFIT_STAGE_FRACTION_BASES: Final[dict[str, float]] = {
 
 @lru_cache(maxsize=_CACHE_MAXSIZE_SMALL)
 def get_take_profit_stage_fractions(series: str, partial_stage_count: int) -> tuple[float, ...]:
-    """Return the ``partial_stage_count`` partial ladder fractions of ``series``.
-
-    Fractions are ``base ** -(partial_stage_count - stage) / 2`` so that the
-    squared fractions follow a geometric ladder ending at the final stage,
-    whose multiplier is exactly ``1.0``. ``golden_ratio`` reproduces the
-    canonical 23.6 / 38.2 / 61.8 percent retracement ladder.
-    """
+    """Return the partial ladder fractions of ``series``, ascending toward ``1.0``."""
     base = _TAKE_PROFIT_STAGE_FRACTION_BASES.get(series)
     if base is None or base <= 1.0 or partial_stage_count < 0:
         raise ValueError(
@@ -1075,7 +1070,7 @@ def get_take_profit_stage_fractions(series: str, partial_stage_count: int) -> tu
             )
         )
     fractions = tuple(
-        base ** (-(partial_stage_count - stage) / 2.0) for stage in range(partial_stage_count)
+        base ** -(partial_stage_count - stage) for stage in range(partial_stage_count)
     )
     if any(not 0.0 < fraction < 1.0 for fraction in fractions):
         raise ValueError(
