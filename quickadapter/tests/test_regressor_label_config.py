@@ -136,6 +136,56 @@ class RegressorLabelConfigTest(QaTestCase):
             for value in (rejected, DEFAULT_REGRESSOR, *REGRESSORS):
                 self.assertIn(value, warning)
 
+    def test_startup_deduplicates_horizon_warnings_without_merging_pair_fallbacks(self):
+        pairs = [PAIR, "ETH/USDT", "SOL/USDT"]
+        for rejected in (0, True, None, [], {}):
+            with self.subTest(rejected=rejected), temporary_directory() as temp:
+                config = model_config(
+                    temp,
+                    exchange={"pair_whitelist": pairs},
+                    freqai={
+                        "optuna_hyperopt": {"enabled": False},
+                        "feature_parameters": {
+                            "label_period_candles": 7,
+                            "label_horizon_candles": rejected,
+                        },
+                        "label_prediction": {"method": "thresholding"},
+                    },
+                )
+                config["runmode"] = RunMode.BACKTEST
+                with self.assertLogs(REGRESSOR_LOGGER, level="INFO") as initial:
+                    model = QuickAdapterRegressorV3(config=config)
+                horizon_warnings = [
+                    record
+                    for record in initial.records
+                    if record.levelname == "WARNING"
+                    and "label_horizon_candles" in record.getMessage()
+                ]
+                self.assertEqual(1, len(horizon_warnings))
+                params = dict(model.get_optuna_params(pairs[1], _OPTUNA_NAMESPACES.label))
+                params["label_period_candles"] = 13
+                model.set_optuna_params(pairs[1], _OPTUNA_NAMESPACES.label, params)
+                for _ in range(2):
+                    with self.assertLogs(REGRESSOR_LOGGER, level="INFO") as startup:
+                        model._log_model_configuration()
+                    horizon_warnings = [
+                        record
+                        for record in startup.records
+                        if record.levelname == "WARNING"
+                        and "label_horizon_candles" in record.getMessage()
+                    ]
+                    self.assertEqual(2, len(horizon_warnings))
+                    messages = [record.getMessage() for record in startup.records]
+                    for pair, horizon in zip(pairs, (7, 13, 7), strict=True):
+                        pair_message = next(
+                            message for message in messages if f"{pair}:" in message
+                        )
+                        self.assertIn(f"label_horizon_candles={horizon}", pair_message)
+                with self.assertLogs(REGRESSOR_LOGGER, level="WARNING") as runtime:
+                    horizons = [model._label_horizon_candles(pair) for pair in pairs]
+                self.assertEqual([7, 13, 7], horizons)
+                self.assertEqual(3, len(runtime.records))
+
     def test_startup_reports_requested_hpo_separately_from_effective_activation(self):
         for requested, freqai_enabled, test_size, active in (
             (False, True, 0.2, False),

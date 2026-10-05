@@ -1704,7 +1704,9 @@ def get_causal_mode(config: dict[str, Any], logger: Logger) -> bool:
     return causal_mode
 
 
-def get_label_horizon_candles(config: dict[str, Any], logger: Logger) -> int:
+def get_label_horizon_candles(
+    config: dict[str, Any], logger: Logger, *, warning_messages: set[str] | None = None
+) -> int:
     def _is_positive_int(value: Any) -> bool:
         return not isinstance(value, bool) and isinstance(value, (int, np.integer)) and value >= 1
 
@@ -1713,10 +1715,14 @@ def get_label_horizon_candles(config: dict[str, Any], logger: Logger) -> int:
         fallback = 1
     label_horizon_candles = config.get("label_horizon_candles", fallback)
     if not _is_positive_int(label_horizon_candles):
-        logger.warning(
+        message = (
             f"Invalid label_horizon_candles value {label_horizon_candles!r}: "
             f"must be int >= 1, using {fallback!r}"
         )
+        if warning_messages is None or message not in warning_messages:
+            logger.warning(message)
+            if warning_messages is not None:
+                warning_messages.add(message)
         return fallback
     return int(label_horizon_candles)
 

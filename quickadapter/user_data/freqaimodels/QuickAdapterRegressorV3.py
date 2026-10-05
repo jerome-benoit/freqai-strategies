@@ -1632,11 +1632,14 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     def _causal_mode(self) -> bool:
         return get_causal_mode(self.ft_params, logger)
 
-    def _label_horizon_candles(self, pair: str | None = None) -> int:
-        if pair is None:
-            return get_label_horizon_candles(self.ft_params, logger)
-        label_params = self.get_optuna_params(pair, _OPTUNA_NAMESPACES.label)
-        return get_label_horizon_candles({**self.ft_params, **label_params}, logger)
+    def _label_horizon_candles(
+        self, pair: str | None = None, *, warning_messages: set[str] | None = None
+    ) -> int:
+        config = self.ft_params
+        if pair is not None:
+            label_params = self.get_optuna_params(pair, _OPTUNA_NAMESPACES.label)
+            config = {**config, **label_params}
+        return get_label_horizon_candles(config, logger, warning_messages=warning_messages)
 
     @property
     def _optuna_label_candle_pool_full(self) -> list[int]:
@@ -1927,12 +1930,14 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         logger.info("Label Parameters:")
         logger.info(f"  fit_live_predictions_candles: {self._fit_live_predictions_candles}")
+        horizon_warning_messages: set[str] = set()
         for pair in self.pairs:
             params = self.get_optuna_params(pair, _OPTUNA_NAMESPACES.label)
+            horizon = self._label_horizon_candles(pair, warning_messages=horizon_warning_messages)
             logger.info(
                 f"  {pair}: label_period_candles={params.get('label_period_candles')}, "
                 f"label_natr_multiplier={format_number(params.get('label_natr_multiplier'))}, "
-                f"label_horizon_candles={self._label_horizon_candles(pair)} (resolved at startup)"
+                f"label_horizon_candles={horizon} (resolved at startup)"
             )
 
         label_frequency_candles = self._label_frequency_candles
