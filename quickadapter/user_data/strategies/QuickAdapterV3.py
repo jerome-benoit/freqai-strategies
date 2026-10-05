@@ -27,6 +27,7 @@ from freqtrade.strategy.interface import IStrategy
 from freqtrade.util import FtPrecise
 from LabelTransformer import (
     COMBINED_AGGREGATIONS,
+    FILL_BANDWIDTHS,
     FILL_METHODS,
     SMOOTHING_METHOD_MODES,
     SMOOTHING_METHODS,
@@ -540,12 +541,19 @@ class QuickAdapterV3(IStrategy):
         self._log_strategy_configuration()
 
     def _log_strategy_configuration(self) -> None:
+        label_weighting = self.label_weighting
+        label_smoothing = self.label_smoothing
+        reversal_confirmation = self.reversal_confirmation
+        trade_natr_method = self.trade_natr_method
+        final_take_profit_retracement_fraction = self.final_take_profit_retracement_fraction
+        fraction_series = self.take_profit_stage_natr_multiplier_fraction_series
+        partial_exit_stage_fractions = self.partial_exit_stage_natr_multiplier_fractions
+        protections = self.protections
+
         logger.info("=" * 60)
         logger.info("QuickAdapter Strategy Configuration")
         logger.info("=" * 60)
 
-        label_weighting = self.label_weighting
-        label_smoothing = self.label_smoothing
         for label_col in LABEL_COLUMNS:
             logger.info(f"Label [{label_col}]:")
 
@@ -554,62 +562,72 @@ class QuickAdapterV3(IStrategy):
             )
             logger.info("  Weighting:")
             logger.info(f"    strategy: {col_weighting['strategy']}")
-            logger.info(
-                f"    metric_coefficients: {format_dict(col_weighting['metric_coefficients'], style=_FORMAT_STYLE_DICT)}"
-            )
-            logger.info(f"    aggregation: {col_weighting['aggregation']}")
-            if col_weighting["aggregation"] == COMBINED_AGGREGATIONS[5]:  # "softmax"
+            if col_weighting["strategy"] != QuickAdapterV3._WEIGHT_NONE:
+                if col_weighting["strategy"] == WEIGHT_STRATEGIES[8]:  # "combined"
+                    logger.info(
+                        f"    metric_coefficients: {format_dict(col_weighting['metric_coefficients'], style=_FORMAT_STYLE_DICT)}"
+                    )
+                    logger.info(f"    aggregation: {col_weighting['aggregation']}")
+                    if col_weighting["aggregation"] == COMBINED_AGGREGATIONS[5]:  # "softmax"
+                        logger.info(
+                            f"    softmax_temperature: {format_number(col_weighting['softmax_temperature'])}"
+                        )
+                fill_method = col_weighting["fill_method"]
+                logger.info(f"    fill_method: {fill_method}")
+                if fill_method in (
+                    QuickAdapterV3._FILL_EPSILON,
+                    QuickAdapterV3._FILL_EPSILON_GAUSSIAN,
+                ):
+                    logger.info(f"    fill_epsilon: {format_number(col_weighting['fill_epsilon'])}")
+                    logger.info(
+                        f"    fill_epsilon_baseline: {col_weighting['fill_epsilon_baseline']}"
+                    )
+                if fill_method in (
+                    QuickAdapterV3._FILL_GAUSSIAN,
+                    QuickAdapterV3._FILL_EPSILON_GAUSSIAN,
+                ):
+                    logger.info(
+                        f"    fill_sigma_candles: {format_number(col_weighting['fill_sigma_candles'])}"
+                    )
+                    logger.info(f"    fill_bandwidth: {col_weighting['fill_bandwidth']}")
+                    if col_weighting["fill_bandwidth"] == FILL_BANDWIDTHS[1]:  # "knn"
+                        logger.info(
+                            f"    fill_sigma_min_candles: {format_number(col_weighting['fill_sigma_min_candles'])}"
+                        )
+                        logger.info(
+                            f"    fill_bandwidth_neighbors: {col_weighting['fill_bandwidth_neighbors']}"
+                        )
+                        logger.info(
+                            f"    fill_bandwidth_alpha: {format_number(col_weighting['fill_bandwidth_alpha'])}"
+                        )
+                logger.info(f"    support_policy: {col_weighting['support_policy']}")
                 logger.info(
-                    f"    softmax_temperature: {format_number(col_weighting['softmax_temperature'])}"
-                )
-            fill_method = col_weighting["fill_method"]
-            logger.info(f"    fill_method: {fill_method}")
-            if fill_method in (
-                QuickAdapterV3._FILL_EPSILON,
-                QuickAdapterV3._FILL_EPSILON_GAUSSIAN,
-            ):
-                logger.info(f"    fill_epsilon: {format_number(col_weighting['fill_epsilon'])}")
-                logger.info(f"    fill_epsilon_baseline: {col_weighting['fill_epsilon_baseline']}")
-            if fill_method in (
-                QuickAdapterV3._FILL_GAUSSIAN,
-                QuickAdapterV3._FILL_EPSILON_GAUSSIAN,
-            ):
-                logger.info(
-                    f"    fill_sigma_candles: {format_number(col_weighting['fill_sigma_candles'])}"
+                    f"    min_pivot_equivalent_count: {col_weighting['min_pivot_equivalent_count']}"
                 )
                 logger.info(
-                    f"    fill_sigma_min_candles: {format_number(col_weighting['fill_sigma_min_candles'])}"
-                )
-                logger.info(f"    fill_bandwidth: {col_weighting['fill_bandwidth']}")
-                logger.info(
-                    f"    fill_bandwidth_neighbors: {col_weighting['fill_bandwidth_neighbors']}"
+                    f"    min_positive_label_weight_fraction: {format_number(col_weighting['min_positive_label_weight_fraction'])}"
                 )
                 logger.info(
-                    f"    fill_bandwidth_alpha: {format_number(col_weighting['fill_bandwidth_alpha'])}"
+                    f"    min_effective_sample_size: {format_number(col_weighting['min_effective_sample_size'])}"
                 )
-            logger.info(f"    support_policy: {col_weighting['support_policy']}")
-            logger.info(
-                f"    min_pivot_equivalent_count: {col_weighting['min_pivot_equivalent_count']}"
-            )
-            logger.info(
-                f"    min_positive_label_weight_fraction: {format_number(col_weighting['min_positive_label_weight_fraction'])}"
-            )
-            logger.info(
-                f"    min_effective_sample_size: {format_number(col_weighting['min_effective_sample_size'])}"
-            )
 
             col_smoothing = get_label_column_config(
                 label_col, label_smoothing["default"], label_smoothing["columns"]
             )
             logger.info("  Smoothing:")
-            logger.info(f"    method: {col_smoothing['method']}")
-            logger.info(f"    window_candles: {col_smoothing['window_candles']}")
-            logger.info(f"    beta: {format_number(col_smoothing['beta'])}")
-            logger.info(f"    polyorder: {col_smoothing['polyorder']}")
-            logger.info(f"    mode: {col_smoothing['mode']}")
-            logger.info(f"    sigma: {format_number(col_smoothing['sigma'])}")
-
             method = col_smoothing["method"]
+            logger.info(f"    method: {method}")
+            if method != SMOOTHING_METHODS[0]:  # "none"
+                logger.info(f"    window_candles: {col_smoothing['window_candles']}")
+                if method in SMOOTHING_METHODS[2:4]:  # Kaiser families
+                    logger.info(f"    beta: {format_number(col_smoothing['beta'])}")
+                if method == QuickAdapterV3._SMOOTHING_SAVGOL:
+                    logger.info(f"    polyorder: {col_smoothing['polyorder']}")
+                if method in SMOOTHING_METHOD_MODES:
+                    logger.info(f"    mode: {col_smoothing['mode']}")
+                if method == SMOOTHING_METHODS[8]:  # "gaussian_filter1d"
+                    logger.info(f"    sigma: {format_number(col_smoothing['sigma'])}")
+
             if col_weighting["strategy"] != QuickAdapterV3._WEIGHT_NONE and (
                 method == QuickAdapterV3._SMOOTHING_SMM
                 or (method == QuickAdapterV3._SMOOTHING_SAVGOL and col_smoothing["polyorder"] >= 2)
@@ -628,28 +646,23 @@ class QuickAdapterV3(IStrategy):
 
         logger.info("Reversal Confirmation:")
         logger.info(
-            f"  lookback_period_candles: {self.reversal_confirmation['lookback_period_candles']}"
+            f"  lookback_period_candles: {reversal_confirmation['lookback_period_candles']}"
+        )
+        logger.info(f"  decay_fraction: {format_number(reversal_confirmation['decay_fraction'])}")
+        logger.info(
+            f"  min_natr_multiplier_fraction: {format_number(reversal_confirmation['min_natr_multiplier_fraction'])}"
         )
         logger.info(
-            f"  decay_fraction: {format_number(self.reversal_confirmation['decay_fraction'])}"
-        )
-        logger.info(
-            f"  min_natr_multiplier_fraction: {format_number(self.reversal_confirmation['min_natr_multiplier_fraction'])}"
-        )
-        logger.info(
-            f"  max_natr_multiplier_fraction: {format_number(self.reversal_confirmation['max_natr_multiplier_fraction'])}"
+            f"  max_natr_multiplier_fraction: {format_number(reversal_confirmation['max_natr_multiplier_fraction'])}"
         )
 
         logger.info("Exit Pricing:")
-        logger.info(f"  trade_natr_method: {self.trade_natr_method}")
+        logger.info(f"  trade_natr_method: {trade_natr_method}")
         logger.info(
             "  final_take_profit_retracement_fraction: "
-            f"{format_number(self.final_take_profit_retracement_fraction)}"
+            f"{format_number(final_take_profit_retracement_fraction)}"
         )
-        logger.info(
-            "  take_profit_stage_natr_multiplier_fraction_series: "
-            f"{self.take_profit_stage_natr_multiplier_fraction_series}"
-        )
+        logger.info(f"  take_profit_stage_natr_multiplier_fraction_series: {fraction_series}")
 
         logger.info("Custom Stoploss:")
         logger.info(
@@ -663,17 +676,20 @@ class QuickAdapterV3(IStrategy):
         ) in QuickAdapterV3.partial_exit_stages.items():
             logger.info(
                 f"  stage {stage}: natr_multiplier_fraction="
-                f"{format_number(self.get_exit_stage_natr_multiplier_fraction(stage))}, "
+                f"{format_number(partial_exit_stage_fractions[stage])}, "
                 f"stake_percent={format_number(stake_percent)}, color={color}"
             )
 
+        logger.info("Final Exit:")
         logger.info(
-            f"Final Exit: natr_multiplier_fraction={format_number(QuickAdapterV3._FINAL_EXIT_STAGE_PARAMS[0])}, stake_percent={format_number(QuickAdapterV3._FINAL_EXIT_STAGE_PARAMS[1])}, color={QuickAdapterV3._FINAL_EXIT_STAGE_PARAMS[2]}"
+            f"  natr_multiplier_fraction: {format_number(QuickAdapterV3._FINAL_EXIT_STAGE_PARAMS[0])}"
         )
+        logger.info(f"  stake_percent: {format_number(QuickAdapterV3._FINAL_EXIT_STAGE_PARAMS[1])}")
+        logger.info(f"  color: {QuickAdapterV3._FINAL_EXIT_STAGE_PARAMS[2]}")
 
         logger.info("Protections:")
-        if self.protections:
-            for protection in self.protections:
+        if protections:
+            for protection in protections:
                 method = protection.get("method", "Unknown")
                 protection_params = {k: v for k, v in protection.items() if k != "method"}
                 logger.info(
