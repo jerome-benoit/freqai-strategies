@@ -16,6 +16,7 @@ from qa_support import PAIR, QaTestCase
 from QuickAdapterV3 import QuickAdapterV3
 from Utils import (
     TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_SERIES,
+    get_exit_stage_stake_fractions,
     get_take_profit_stage_natr_multiplier_fractions,
 )
 
@@ -549,7 +550,7 @@ class StrategyFeaturesTest(QaTestCase):
                 self.assertIsNotNone(target)
                 assert_allclose(target[0], 100.0 + distance, rtol=1e-9, atol=1e-9)
                 assert_allclose(target[1], distance, rtol=1e-9, atol=1e-9)
-        for stage in (QuickAdapterV3._FINAL_EXIT_STAGE, 99, -1):
+        for stage in (QuickAdapterV3.get_final_exit_stage(), 99, -1):
             with self.subTest(final_stage=stage):
                 target = model.get_take_profit_target(frame, long_trade, stage)
                 assert_allclose(
@@ -560,7 +561,7 @@ class StrategyFeaturesTest(QaTestCase):
                 )
         stages = [
             model.get_take_profit_target(frame, long_trade, stage)[1]
-            for stage in (0, 1, 2, QuickAdapterV3._FINAL_EXIT_STAGE)
+            for stage in (0, 1, 2, QuickAdapterV3.get_final_exit_stage())
         ]
         self.assertEqual(stages, sorted(stages))
 
@@ -638,8 +639,10 @@ class StrategyFeaturesTest(QaTestCase):
                 self.assertLess(pi_distance, fibonacci_distance)
         # The final distance is independent of the partial extension series.
         self.assertEqual(
-            fibonacci.get_take_profit_target(frame, long_trade, QuickAdapterV3._FINAL_EXIT_STAGE),
-            pi.get_take_profit_target(frame, long_trade, QuickAdapterV3._FINAL_EXIT_STAGE),
+            fibonacci.get_take_profit_target(
+                frame, long_trade, QuickAdapterV3.get_final_exit_stage()
+            ),
+            pi.get_take_profit_target(frame, long_trade, QuickAdapterV3.get_final_exit_stage()),
         )
 
     def test_fraction_series_validates_names_and_stage_counts(self):
@@ -677,6 +680,63 @@ class StrategyFeaturesTest(QaTestCase):
     def test_a_negative_partial_stage_count_is_rejected(self):
         with self.assertRaises(ValueError):
             get_take_profit_stage_natr_multiplier_fractions("fibonacci_extensions", -1)
+
+    def test_every_exit_releases_an_equal_share_of_the_initial_stake(self):
+        # Each stage closes 1 / (exit count) of the stake the position opened
+        # with; the final full exit closes the last such share.
+        for count in (1, 2, 3, 4, 5, 8):
+            with self.subTest(partial_stage_count=count):
+                remaining = 100.0
+                released = []
+                for fraction in get_exit_stage_stake_fractions(count):
+                    released.append(fraction * remaining)
+                    remaining -= fraction * remaining
+                released.append(remaining)
+                assert_allclose(released, [100.0 / (count + 1)] * (count + 1), rtol=1e-12)
+                self.assertGreater(remaining, 0.0)
+
+    def test_the_remaining_stake_share_grows_with_the_stage_index(self):
+        assert_allclose(get_exit_stage_stake_fractions(3), (0.25, 1 / 3, 0.5), rtol=1e-15)
+        self.assertEqual(get_exit_stage_stake_fractions(0), ())
+        with self.assertRaises(ValueError):
+            get_exit_stage_stake_fractions(-1)
+
+    def test_the_stake_shares_follow_the_configured_stage_count(self):
+        # Adding or removing a rung re-sizes every share without any literal.
+        for stages in ({0: "lime"}, {0: "lime", 1: "yellow"}, {0: "a", 1: "b", 2: "c", 3: "d"}):
+            with (
+                self.subTest(stages=stages),
+                mock.patch.object(QuickAdapterV3, "partial_exit_stages", stages),
+            ):
+                model = strategy()
+                self.assertEqual(
+                    model.partial_exit_stage_stake_fractions,
+                    dict(
+                        zip(
+                            sorted(stages), get_exit_stage_stake_fractions(len(stages)), strict=True
+                        )
+                    ),
+                )
+                fractions = model.partial_exit_stage_stake_fractions
+                exit_count = len(stages) + 1
+                # Stake remaining before stage k is (exit_count - k) / exit_count.
+                released = [
+                    fractions[stage] * (100.0 * (exit_count - stage) / exit_count)
+                    for stage in sorted(stages)
+                ]
+                assert_allclose(released, [100.0 / exit_count] * len(stages), rtol=1e-12)
+
+    def test_no_partial_stage_share_closes_the_whole_position(self):
+        # The final exit owns the last share; a partial rung can never take it.
+        for count in (1, 2, 3, 4, 5):
+            with self.subTest(partial_stage_count=count):
+                for fraction in get_exit_stage_stake_fractions(count):
+                    self.assertGreater(fraction, 0.0)
+                    self.assertLess(fraction, 1.0)
+                remaining = 1.0
+                for fraction in get_exit_stage_stake_fractions(count):
+                    remaining *= 1.0 - fraction
+                self.assertGreater(remaining, 0.0)
 
     def test_a_short_take_profit_target_flips_the_sign(self):
         model = strategy()
@@ -726,7 +786,7 @@ class StrategyFeaturesTest(QaTestCase):
         underwater = model.get_take_profit_target(
             candles([100.0, 100.0, 100.0], natr=[1.0, 400.0, 800.0], multiplier=MULTIPLIER),
             trade(open_rate=1e-9, is_short=True),
-            QuickAdapterV3._FINAL_EXIT_STAGE,
+            QuickAdapterV3.get_final_exit_stage(),
         )
         self.assertIsNone(underwater)
 

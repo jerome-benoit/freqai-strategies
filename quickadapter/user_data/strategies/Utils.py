@@ -1105,6 +1105,23 @@ def get_take_profit_stage_natr_multiplier_fractions(
     return fractions
 
 
+@lru_cache(maxsize=_CACHE_MAXSIZE_SMALL)
+def get_exit_stage_stake_fractions(partial_stage_count: int) -> tuple[float, ...]:
+    """Return each partial exit's share of the stake remaining at that stage.
+
+    With ``partial_stage_count`` partial exits plus the final full exit, the
+    position is released in ``partial_stage_count + 1`` equal shares of its
+    initial stake. The remaining stake before stage ``k`` is
+    ``(n + 1 - k) / (n + 1)`` of the initial stake, so releasing ``1 / (n + 1)``
+    of it means closing ``1 / (n + 1 - k)`` of what is left. The final exit
+    needs no share: it closes the remainder.
+    """
+    if partial_stage_count < 0:
+        raise ValueError(f"Invalid partial_stage_count value {partial_stage_count!r}: must be >= 0")
+    exit_count = partial_stage_count + 1
+    return tuple(1.0 / (exit_count - stage) for stage in range(partial_stage_count))
+
+
 SPARSE_TRAINING_MASS_THRESHOLD: Final[float] = 0.05
 
 DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES: Final[int] = 100

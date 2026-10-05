@@ -70,6 +70,7 @@ from Utils import (
     get_custom_protections_config,
     get_distance,
     get_exit_pricing_config,
+    get_exit_stage_stake_fractions,
     get_fit_live_predictions_candles,
     get_label_defaults,
     get_label_horizon_candles,
@@ -230,25 +231,27 @@ class QuickAdapterV3(IStrategy):
 
     position_adjustment_enable = True
 
-    # {stage: (stake_percent, color)}. The reciprocal-extension fractions are
-    # not literals here: they resolve from the configured
-    # ``exit_pricing.take_profit_stage_natr_multiplier_fraction_series`` ladder,
-    # which is their single source of truth. The final rung stays the literal.
-    partial_exit_stages: ClassVar[dict[int, tuple[float, str]]] = {
-        0: (0.4, "lime"),
-        1: (0.3, "yellow"),
-        2: (0.2, "coral"),
+    # {stage: color}. Neither the partial target distances nor the released stake
+    # shares are literals here: both resolve from this stage count, which is
+    # their single source of truth. The final rung stays a literal.
+    partial_exit_stages: ClassVar[dict[int, str]] = {
+        0: "lime",
+        1: "yellow",
+        2: "coral",
     }
 
-    # (natr_multiplier_fraction, stake_percent, color)
-    _FINAL_EXIT_STAGE_PARAMS: Final[tuple[float, float, str]] = (
-        1.0,
+    # (natr_multiplier_fraction, color). The final exit closes the whole
+    # remaining stake, so it carries no share of its own.
+    _FINAL_EXIT_STAGE_PARAMS: Final[tuple[float, str]] = (
         1.0,
         "deepskyblue",
     )
 
-    # Final full-exit stage, derived from the configured partial exits.
-    _FINAL_EXIT_STAGE: Final[int] = max(partial_exit_stages.keys(), default=-1) + 1
+    # Final full-exit stage, derived from the configured partial exits. Resolved
+    # on each access so adding or removing a rung moves it with the table.
+    @staticmethod
+    def get_final_exit_stage() -> int:
+        return max(QuickAdapterV3.partial_exit_stages.keys(), default=-1) + 1
 
     # ``get_trade_exit_stage`` derives a stage from the number of filled take-profit
     # exits, so every stage it can reach must exist here. A gap would price a
@@ -457,6 +460,12 @@ class QuickAdapterV3(IStrategy):
             self.take_profit_stage_natr_multiplier_fraction_series,
             len(QuickAdapterV3.partial_exit_stages),
         )
+        return dict(zip(sorted(QuickAdapterV3.partial_exit_stages), fractions, strict=True))
+
+    @cached_property
+    def partial_exit_stage_stake_fractions(self) -> dict[int, float]:
+        """Share of the stake remaining at each stage, releasing equal slices."""
+        fractions = get_exit_stage_stake_fractions(len(QuickAdapterV3.partial_exit_stages))
         return dict(zip(sorted(QuickAdapterV3.partial_exit_stages), fractions, strict=True))
 
     def get_exit_stage_natr_multiplier_fraction(self, exit_stage: int) -> float:
@@ -669,23 +678,27 @@ class QuickAdapterV3(IStrategy):
             f"  natr_multiplier_fraction: {format_number(QuickAdapterV3._CUSTOM_STOPLOSS_NATR_MULTIPLIER_FRACTION)}"
         )
 
+        stake_fractions = self.partial_exit_stage_stake_fractions
+        initial_share = 1 / (len(QuickAdapterV3.partial_exit_stages) + 1)
+        logger.info(f"Equal Stake Shares: {len(QuickAdapterV3.partial_exit_stages) + 1} exits")
         logger.info("Partial Take-Profit Stages:")
-        for stage, (
-            stake_percent,
-            color,
-        ) in QuickAdapterV3.partial_exit_stages.items():
+        for stage in sorted(QuickAdapterV3.partial_exit_stages):
             logger.info(
                 f"  stage {stage}: natr_multiplier_fraction="
                 f"{format_number(partial_exit_stage_fractions[stage])}, "
-                f"stake_percent={format_number(stake_percent)}, color={color}"
+                f"stake_fraction_of_remaining={format_number(stake_fractions[stage])}, "
+                f"stake_share_of_initial={format_number(initial_share)}, "
+                f"color={QuickAdapterV3.partial_exit_stages[stage]}"
             )
 
         logger.info("Final Exit:")
         logger.info(
             f"  natr_multiplier_fraction: {format_number(QuickAdapterV3._FINAL_EXIT_STAGE_PARAMS[0])}"
         )
-        logger.info(f"  stake_percent: {format_number(QuickAdapterV3._FINAL_EXIT_STAGE_PARAMS[1])}")
-        logger.info(f"  color: {QuickAdapterV3._FINAL_EXIT_STAGE_PARAMS[2]}")
+        logger.info(
+            f"  stake_share_of_initial: {format_number(initial_share)}, closes the remainder"
+        )
+        logger.info(f"  color: {QuickAdapterV3._FINAL_EXIT_STAGE_PARAMS[1]}")
 
         logger.info("Protections:")
         if protections:
@@ -1375,7 +1388,7 @@ class QuickAdapterV3(IStrategy):
             for order in trade.select_filled_orders(trade.exit_side)
             if (order.ft_order_tag or "").startswith(QuickAdapterV3._TAKE_PROFIT_ORDER_TAG_PREFIX)
         )
-        return min(n_filled_take_profit_exits, QuickAdapterV3._FINAL_EXIT_STAGE)
+        return min(n_filled_take_profit_exits, QuickAdapterV3.get_final_exit_stage())
 
     @staticmethod
     @lru_cache(maxsize=_CACHE_MAXSIZE_LARGE)
@@ -1926,8 +1939,8 @@ class QuickAdapterV3(IStrategy):
                 ),
             )
         if trade_partial_exit:
-            trade_stake_percent = QuickAdapterV3.partial_exit_stages[trade_exit_stage][0]
-            trade_partial_stake_amount = trade_stake_percent * trade.stake_amount
+            trade_stake_fraction = self.partial_exit_stage_stake_fractions[trade_exit_stage]
+            trade_partial_stake_amount = trade_stake_fraction * trade.stake_amount
             tag = (
                 f"{QuickAdapterV3._TAKE_PROFIT_ORDER_TAG_PREFIX}"
                 f"{trade.trade_direction}_{trade_exit_stage}"
@@ -2596,7 +2609,7 @@ class QuickAdapterV3(IStrategy):
                     "end": end_date,
                     "y_start": partial_take_profit_price,
                     "y_end": partial_take_profit_price,
-                    "color": QuickAdapterV3.partial_exit_stages[take_profit_stage][1],
+                    "color": QuickAdapterV3.partial_exit_stages[take_profit_stage],
                     "line_style": "solid",
                     "width": 1,
                     "label": f"Partial Take-Profit Stage {take_profit_stage}",
@@ -2604,7 +2617,7 @@ class QuickAdapterV3(IStrategy):
                 }
                 annotations.append(take_profit_line_annotation)
 
-            final_exit_stage = QuickAdapterV3._FINAL_EXIT_STAGE
+            final_exit_stage = QuickAdapterV3.get_final_exit_stage()
             raw_final_take_profit_state = trade.get_custom_data(
                 QuickAdapterV3._FINAL_TAKE_PROFIT_STATE_KEY
             )
@@ -2637,7 +2650,7 @@ class QuickAdapterV3(IStrategy):
                                 "end": end_date,
                                 "y_start": final_take_profit_price,
                                 "y_end": final_take_profit_price,
-                                "color": QuickAdapterV3._FINAL_EXIT_STAGE_PARAMS[2],
+                                "color": QuickAdapterV3._FINAL_EXIT_STAGE_PARAMS[1],
                                 "line_style": "solid",
                                 "width": 1,
                                 "label": "Final Take-Profit Trail (current)",
@@ -2658,7 +2671,7 @@ class QuickAdapterV3(IStrategy):
                         "end": end_date,
                         "y_start": final_take_profit_price,
                         "y_end": final_take_profit_price,
-                        "color": QuickAdapterV3._FINAL_EXIT_STAGE_PARAMS[2],
+                        "color": QuickAdapterV3._FINAL_EXIT_STAGE_PARAMS[1],
                         "line_style": "solid",
                         "width": 1,
                         "label": "Final Take-Profit Arming Target",

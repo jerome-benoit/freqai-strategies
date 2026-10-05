@@ -341,7 +341,9 @@ class RuntimeSizingTest(QaTestCase):
                         0.2,
                         0.2,
                     )
-                    stake_reduction = -100.0 * QuickAdapterV3.partial_exit_stages[0][0]
+                    # Four exits release the position in equal shares, so the
+                    # first one closes a quarter of the 100 stake.
+                    stake_reduction = -25.0
                     direction = "short" if short else "long"
                     self.assertEqual(after, (stake_reduction, f"take_profit_{direction}_0"))
 
