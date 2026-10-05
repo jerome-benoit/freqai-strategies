@@ -61,6 +61,8 @@ and installed dependency versions when comparing runs.
    changes the nominal shares. Exchange lot precision, minimum-stake limits
    and canceled partially filled orders can change the realized shares;
    minimums can reduce a partial request or turn it into a full close.
+   An executable partial lot is preserved through stake conversion; if no
+   callback stake reproduces the selected lot, the strategy requests a full close.
    The last rung's target arms a persisted trailing full exit: a material
    adverse retracement exits, not elapsed stagnation alone. Open orders
    block new staged adjustments.

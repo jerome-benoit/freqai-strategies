@@ -1413,213 +1413,213 @@
     },
     {
       "endCharacter": 39,
-      "endLine": 2021,
+      "endLine": 2028,
       "file": "quickadapter/user_data/strategies/QuickAdapterV3.py",
       "message": "Operator \"+\" not supported for \"None\"",
       "rule": "reportOptionalOperand",
       "severity": "error",
       "startCharacter": 21,
-      "startLine": 2021
+      "startLine": 2028
     },
     {
       "endCharacter": 90,
-      "endLine": 2021,
+      "endLine": 2028,
       "file": "quickadapter/user_data/strategies/QuickAdapterV3.py",
       "message": "Operator \"*\" not supported for types \"float\" and \"Any | None\"\n  Operator \"*\" not supported for types \"float\" and \"None\"",
       "rule": "reportOperatorIssue",
       "severity": "error",
       "startCharacter": 62,
-      "startLine": 2021
+      "startLine": 2028
     },
     {
       "endCharacter": 96,
-      "endLine": 2325,
+      "endLine": 2332,
       "file": "quickadapter/user_data/strategies/QuickAdapterV3.py",
       "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"timeframe\" of type \"str\" in function \"get_analyzed_dataframe\"\n  Type \"Any | None\" is not assignable to type \"str\"\n    \"None\" is not assignable to \"str\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 68,
-      "startLine": 2325
+      "startLine": 2332
     },
     {
       "endCharacter": 85,
-      "endLine": 2350,
+      "endLine": 2357,
       "file": "quickadapter/user_data/strategies/QuickAdapterV3.py",
       "message": "\"isoformat\" is not a known attribute of \"None\"",
       "rule": "reportOptionalMemberAccess",
       "severity": "error",
       "startCharacter": 76,
-      "startLine": 2350
+      "startLine": 2357
     },
     {
       "endCharacter": 47,
-      "endLine": 2356,
+      "endLine": 2363,
       "file": "quickadapter/user_data/strategies/QuickAdapterV3.py",
       "message": "Operator \"<\" not supported for \"None\"",
       "rule": "reportOptionalOperand",
       "severity": "error",
       "startCharacter": 16,
-      "startLine": 2356
+      "startLine": 2363
     },
     {
       "endCharacter": 42,
-      "endLine": 2360,
+      "endLine": 2367,
       "file": "quickadapter/user_data/strategies/QuickAdapterV3.py",
       "message": "Argument of type \"str\" cannot be assigned to parameter \"side\" of type \"TradeDirection\" in function \"reversal_confirmed\"\n  Type \"str\" is not assignable to type \"TradeDirection\"\n    \"str\" is not assignable to type \"Literal['long']\"\n    \"str\" is not assignable to type \"Literal['short']\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 16,
-      "startLine": 2360
+      "startLine": 2367
     },
     {
       "endCharacter": 42,
-      "endLine": 2361,
+      "endLine": 2368,
       "file": "quickadapter/user_data/strategies/QuickAdapterV3.py",
       "message": "Argument of type \"str\" cannot be assigned to parameter \"order\" of type \"OrderType\" in function \"reversal_confirmed\"\n  Type \"str\" is not assignable to type \"OrderType\"\n    \"str\" is not assignable to type \"Literal['entry']\"\n    \"str\" is not assignable to type \"Literal['exit']\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 16,
-      "startLine": 2361
+      "startLine": 2368
     },
     {
       "endCharacter": 69,
-      "endLine": 2363,
+      "endLine": 2370,
       "file": "quickadapter/user_data/strategies/QuickAdapterV3.py",
       "message": "Argument of type \"int | float\" cannot be assigned to parameter \"lookback_period_candles\" of type \"int\" in function \"reversal_confirmed\"\n  Type \"int | float\" is not assignable to type \"int\"\n    \"float\" is not assignable to \"int\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 16,
-      "startLine": 2363
+      "startLine": 2370
     },
     {
       "endCharacter": 47,
-      "endLine": 2374,
+      "endLine": 2381,
       "file": "quickadapter/user_data/strategies/QuickAdapterV3.py",
       "message": "Operator \">\" not supported for \"None\"",
       "rule": "reportOptionalOperand",
       "severity": "error",
       "startCharacter": 16,
-      "startLine": 2374
+      "startLine": 2381
     },
     {
       "endCharacter": 43,
-      "endLine": 2378,
+      "endLine": 2385,
       "file": "quickadapter/user_data/strategies/QuickAdapterV3.py",
       "message": "Argument of type \"str\" cannot be assigned to parameter \"side\" of type \"TradeDirection\" in function \"reversal_confirmed\"\n  Type \"str\" is not assignable to type \"TradeDirection\"\n    \"str\" is not assignable to type \"Literal['long']\"\n    \"str\" is not assignable to type \"Literal['short']\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 16,
-      "startLine": 2378
+      "startLine": 2385
     },
     {
       "endCharacter": 42,
-      "endLine": 2379,
+      "endLine": 2386,
       "file": "quickadapter/user_data/strategies/QuickAdapterV3.py",
       "message": "Argument of type \"str\" cannot be assigned to parameter \"order\" of type \"OrderType\" in function \"reversal_confirmed\"\n  Type \"str\" is not assignable to type \"OrderType\"\n    \"str\" is not assignable to type \"Literal['entry']\"\n    \"str\" is not assignable to type \"Literal['exit']\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 16,
-      "startLine": 2379
+      "startLine": 2386
     },
     {
       "endCharacter": 69,
-      "endLine": 2381,
+      "endLine": 2388,
       "file": "quickadapter/user_data/strategies/QuickAdapterV3.py",
       "message": "Argument of type \"int | float\" cannot be assigned to parameter \"lookback_period_candles\" of type \"int\" in function \"reversal_confirmed\"\n  Type \"int | float\" is not assignable to type \"int\"\n    \"float\" is not assignable to \"int\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 16,
-      "startLine": 2381
+      "startLine": 2388
     },
     {
       "endCharacter": 52,
-      "endLine": 2410,
+      "endLine": 2417,
       "file": "quickadapter/user_data/strategies/QuickAdapterV3.py",
       "message": "Argument of type \"datetime | None\" cannot be assigned to parameter \"current_candle_date\" of type \"datetime\" in function \"_normalize_final_take_profit_state\"\n  Type \"datetime | None\" is not assignable to type \"datetime\"\n    \"None\" is not assignable to \"datetime\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 36,
-      "startLine": 2410
+      "startLine": 2417
     },
     {
       "endCharacter": 96,
-      "endLine": 2530,
+      "endLine": 2537,
       "file": "quickadapter/user_data/strategies/QuickAdapterV3.py",
       "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"timeframe\" of type \"str\" in function \"get_analyzed_dataframe\"\n  Type \"Any | None\" is not assignable to type \"str\"\n    \"None\" is not assignable to \"str\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 68,
-      "startLine": 2530
+      "startLine": 2537
     },
     {
       "endCharacter": 43,
-      "endLine": 2539,
+      "endLine": 2546,
       "file": "quickadapter/user_data/strategies/QuickAdapterV3.py",
       "message": "Argument of type \"str\" cannot be assigned to parameter \"order\" of type \"OrderType\" in function \"reversal_confirmed\"\n  Type \"str\" is not assignable to type \"OrderType\"\n    \"str\" is not assignable to type \"Literal['entry']\"\n    \"str\" is not assignable to type \"Literal['exit']\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 16,
-      "startLine": 2539
+      "startLine": 2546
     },
     {
       "endCharacter": 69,
-      "endLine": 2541,
+      "endLine": 2548,
       "file": "quickadapter/user_data/strategies/QuickAdapterV3.py",
       "message": "Argument of type \"int | float\" cannot be assigned to parameter \"lookback_period_candles\" of type \"int\" in function \"reversal_confirmed\"\n  Type \"int | float\" is not assignable to type \"int\"\n    \"float\" is not assignable to \"int\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 16,
-      "startLine": 2541
+      "startLine": 2548
     },
     {
       "endCharacter": 32,
-      "endLine": 2617,
+      "endLine": 2624,
       "file": "quickadapter/user_data/strategies/QuickAdapterV3.py",
       "message": "Argument of type \"LocalTrade\" cannot be assigned to parameter \"trade\" of type \"Trade\" in function \"get_trade_annotation_line_start_date\"\n  \"LocalTrade\" is not assignable to \"Trade\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 27,
-      "startLine": 2617
+      "startLine": 2624
     },
     {
       "endCharacter": 72,
-      "endLine": 2620,
+      "endLine": 2627,
       "file": "quickadapter/user_data/strategies/QuickAdapterV3.py",
       "message": "Argument of type \"LocalTrade\" cannot be assigned to parameter \"trade\" of type \"Trade\" in function \"get_trade_exit_stage\"\n  \"LocalTrade\" is not assignable to \"Trade\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 67,
-      "startLine": 2620
+      "startLine": 2627
     },
     {
       "endCharacter": 36,
-      "endLine": 2627,
+      "endLine": 2634,
       "file": "quickadapter/user_data/strategies/QuickAdapterV3.py",
       "message": "Argument of type \"LocalTrade\" cannot be assigned to parameter \"trade\" of type \"Trade\" in function \"get_take_profit_target\"\n  \"LocalTrade\" is not assignable to \"Trade\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 31,
-      "startLine": 2627
+      "startLine": 2634
     },
     {
       "endCharacter": 71,
-      "endLine": 2658,
+      "endLine": 2665,
       "file": "quickadapter/user_data/strategies/QuickAdapterV3.py",
       "message": "Argument of type \"LocalTrade\" cannot be assigned to parameter \"trade\" of type \"Trade\" in function \"get_trade_entry_date\"\n  \"LocalTrade\" is not assignable to \"Trade\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 66,
-      "startLine": 2658
+      "startLine": 2665
     },
     {
       "endCharacter": 32,
-      "endLine": 2691,
+      "endLine": 2698,
       "file": "quickadapter/user_data/strategies/QuickAdapterV3.py",
       "message": "Argument of type \"LocalTrade\" cannot be assigned to parameter \"trade\" of type \"Trade\" in function \"get_take_profit_target\"\n  \"LocalTrade\" is not assignable to \"Trade\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 27,
-      "startLine": 2691
+      "startLine": 2698
     },
     {
       "endCharacter": 35,

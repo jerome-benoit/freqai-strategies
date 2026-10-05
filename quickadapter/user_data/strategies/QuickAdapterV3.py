@@ -1970,30 +1970,36 @@ class QuickAdapterV3(IStrategy):
             current_position_value = trade.amount * current_exit_rate
             if current_position_value <= remaining_minimum_value:
                 return -trade.stake_amount, tag
-            exit_amount = exchange.amount_to_contract_precision(
-                pair,
-                min(
-                    float(FtPrecise(trade.amount) / FtPrecise(remaining_stages)),
-                    trade.amount - remaining_minimum_value / current_exit_rate,
-                ),
+            raw_exit_amount = min(
+                float(FtPrecise(trade.amount) / FtPrecise(remaining_stages)),
+                trade.amount - remaining_minimum_value / current_exit_rate,
             )
+            exit_amount = exchange.amount_to_contract_precision(pair, raw_exit_amount)
             if (
                 exit_amount <= 0
                 or exit_amount * current_exit_rate < exit_minimum_value
                 or (trade.amount - exit_amount) * current_exit_rate < remaining_minimum_value
             ):
                 return -trade.stake_amount, tag
-            # Freqtrade truncates its stake-to-quantity quotient to 18 decimal places.
-            # Use the smallest native quotient that quantizes to the selected exchange lot.
-            precise_exit_amount = FtPrecise(exit_amount)
-            native_exit_amount = precise_exit_amount / FtPrecise(1)
-            if native_exit_amount < precise_exit_amount:
-                native_exit_amount += FtPrecise("1e-18")
-            native_exit_quantity = float(native_exit_amount)
-            if exchange.amount_to_contract_precision(pair, native_exit_quantity) != exit_amount:
-                return -trade.stake_amount, tag
-            trade_partial_stake_amount = native_exit_quantity / trade.amount * trade.stake_amount
-            while True:
+            # Use a native-domain antecedent; exchange quantization need not be idempotent.
+            native_raw_exit_amount = FtPrecise(raw_exit_amount) / FtPrecise(1)
+            native_raw_exit_quantity = float(native_raw_exit_amount)
+            if (
+                native_raw_exit_quantity != raw_exit_amount
+                and exchange.amount_to_contract_precision(pair, native_raw_exit_quantity)
+                != exit_amount
+            ):
+                native_raw_exit_quantity = float(native_raw_exit_amount + FtPrecise("1e-18"))
+                if (
+                    exchange.amount_to_contract_precision(pair, native_raw_exit_quantity)
+                    != exit_amount
+                ):
+                    return -trade.stake_amount, tag
+            trade_partial_stake_amount = (
+                native_raw_exit_quantity / trade.amount * trade.stake_amount
+            )
+            rounding_up = None
+            while 0.0 < trade_partial_stake_amount < trade.stake_amount:
                 roundtrip_amount = exchange.amount_to_contract_precision(
                     pair,
                     abs(
@@ -2004,16 +2010,17 @@ class QuickAdapterV3(IStrategy):
                         )
                     ),
                 )
-                if roundtrip_amount >= exit_amount:
+                if roundtrip_amount == exit_amount:
+                    return -trade_partial_stake_amount, tag
+                if rounding_up is None:
+                    rounding_up = roundtrip_amount < exit_amount
+                elif (roundtrip_amount < exit_amount) != rounding_up:
+                    # Adjacent callback floats straddle the lot: no exact request exists.
                     break
-                # Advance only when the callback float would lose a selected lot.
-                trade_partial_stake_amount = math.nextafter(trade_partial_stake_amount, math.inf)
-            if roundtrip_amount != exit_amount:
-                return -trade.stake_amount, tag
-            return (
-                -trade_partial_stake_amount,
-                tag,
-            )
+                trade_partial_stake_amount = math.nextafter(
+                    trade_partial_stake_amount, math.inf if rounding_up else 0.0
+                )
+            return -trade.stake_amount, tag
 
         return None
 

@@ -9,10 +9,10 @@ from unittest import mock
 
 import numpy as np
 import pandas as pd
-from ccxt import TICK_SIZE
-from freqtrade.enums import RunMode
+from ccxt import DECIMAL_PLACES, SIGNIFICANT_DIGITS, TICK_SIZE
+from freqtrade.enums import RunMode, TradingMode
 from freqtrade.exchange import Exchange
-from freqtrade.exchange.exchange_utils import amount_to_contract_precision
+from freqtrade.exchange.exchange_utils import amount_to_contract_precision, contracts_to_amount
 from freqtrade.freqtradebot import FreqtradeBot
 from freqtrade.persistence import Order, Trade
 from qa_support import PAIR, QaTestCase, model_config, temporary_directory
@@ -369,7 +369,14 @@ class RuntimeSizingTest(QaTestCase):
         )
 
     def _filled_position(
-        self, short=False, leverage=2.0, amount=2.0, open_rate=123.4, lot=0.01, contract_size=1.0
+        self,
+        short=False,
+        leverage=2.0,
+        amount=2.0,
+        open_rate=123.4,
+        lot=0.01,
+        contract_size=1.0,
+        precision_mode=TICK_SIZE,
     ):
         position = Trade(
             pair=PAIR,
@@ -383,7 +390,7 @@ class RuntimeSizingTest(QaTestCase):
             fee_open=0.0,
             fee_close=0.0,
             amount_precision=lot,
-            precision_mode=TICK_SIZE,
+            precision_mode=precision_mode,
             contract_size=contract_size,
             orders=[],
         )
@@ -392,19 +399,20 @@ class RuntimeSizingTest(QaTestCase):
         self.custom_data(position)
         return position
 
-    def _native_partial_exit(self, position, rate, min_cost=1.0):
+    def _native_partial_exit(self, position, rate, min_cost=1.0, min_amount=None):
         # Only market data, wallet availability and order submission are isolated.
         exchange = SimpleNamespace(
             markets={
                 PAIR: {
+                    "contractSize": position.contract_size,
                     "limits": {
                         "cost": {"min": min_cost, "max": None},
-                        "amount": {"min": None, "max": None},
-                    }
+                        "amount": {"min": min_amount, "max": None},
+                    },
                 }
             },
             _config={},
-            _contracts_to_amount=lambda pair, amount: amount,
+            trading_mode=TradingMode.FUTURES,
             _get_max_notional_from_tiers=lambda pair, leverage: None,
             get_rates=lambda *args: (rate, rate),
             amount_to_contract_precision=lambda pair, amount: amount_to_contract_precision(
@@ -412,6 +420,8 @@ class RuntimeSizingTest(QaTestCase):
             ),
         )
         for name in (
+            "get_contract_size",
+            "_contracts_to_amount",
             "_get_stake_amount_limit",
             "_get_stake_amount_considering_leverage",
             "get_min_pair_stake_amount",
@@ -433,6 +443,137 @@ class RuntimeSizingTest(QaTestCase):
         bot.execute_trade_exit = fill
         bot.check_and_call_adjust_trade_position(position)
         return fills
+
+    def test_native_fills_preserve_non_idempotent_contract_quantities(self):
+        for precision_mode, precision in (
+            (TICK_SIZE, 1),
+            (DECIMAL_PLACES, 0),
+            (SIGNIFICANT_DIGITS, 2),
+        ):
+            for short in (False, True):
+                with self.subTest(precision_mode=precision_mode, short=short):
+                    position = self._filled_position(
+                        short=short,
+                        amount=contracts_to_amount(110, 1 / 3),
+                        open_rate=100.0,
+                        lot=precision,
+                        contract_size=1 / 3,
+                        precision_mode=precision_mode,
+                    )
+                    target = self.model.get_take_profit_target(self.frame, position, 0)[0]
+                    rate = target * (0.9 if short else 1.1)
+                    self.assertEqual(
+                        self._native_partial_exit(position, rate, min_cost=None, min_amount=1),
+                        [8.999999999999998],
+                    )
+                    self.assertEqual(position.amount, 27.666666666666664)
+                    self.assertAlmostEqual(position.stake_amount, 1383.3333333333333)
+                    self.assertEqual(position.open_rate, 100.0)
+
+    def test_native_roundtrip_adjusts_up_and_down_to_preserve_the_selected_lot(self):
+        cases = (
+            (
+                "up",
+                {"amount": 2.0, "open_rate": 123.4, "lot": 0.01},
+                0.5,
+                1.5,
+                61.7,
+            ),
+            (
+                "down",
+                {
+                    "amount": contracts_to_amount(0.38, 1 / 3),
+                    "open_rate": 100.0,
+                    "lot": 7,
+                    "contract_size": 1 / 3,
+                    "precision_mode": DECIMAL_PLACES,
+                },
+                0.03166663333333333,
+                0.09500003333333332,
+                3.166667777777777,
+            ),
+        )
+        for direction, inputs, filled_amount, remaining_amount, remaining_stake in cases:
+            for short in (False, True):
+                with self.subTest(direction=direction, short=short):
+                    position = self._filled_position(short=short, leverage=3.0, **inputs)
+                    target = self.model.get_take_profit_target(self.frame, position, 0)[0]
+                    rate = target * (0.9 if short else 1.1)
+                    self.assertEqual(
+                        self._native_partial_exit(position, rate, min_cost=None, min_amount=1e-7),
+                        [filled_amount],
+                    )
+                    self.assertEqual(position.amount, remaining_amount)
+                    self.assertAlmostEqual(position.stake_amount, remaining_stake)
+                    self.assertEqual(position.open_rate, inputs["open_rate"])
+
+    def test_native_minimum_clamp_preserves_a_representable_fractional_contract(self):
+        original_model = self.model
+        self.addCleanup(setattr, self, "model", original_model)
+        with mock.patch.object(QuickAdapterV3, "exit_stages", {0: "lime", 1: "yellow"}):
+            self.model = QuickAdapterV3(original_model.config)
+            self.model.freqai_info = original_model.config["freqai"]
+            self.model.bot_start()
+            self.model.dp = original_model.dp
+            for short in (False, True):
+                with self.subTest(short=short):
+                    position = self._filled_position(
+                        short=short,
+                        leverage=1.0,
+                        amount=2.01e-18,
+                        open_rate=1e18,
+                        lot=1,
+                        contract_size=3e-20,
+                    )
+                    rate, min_cost = (1e17, 3.126e18) if short else (1e19, 3.126e20)
+                    self.assertEqual(
+                        self._native_partial_exit(position, rate, min_cost=min_cost), [9.9e-19]
+                    )
+                    self.assertEqual(position.amount, 1.02e-18)
+                    self.assertEqual(position.stake_amount, 1.02)
+
+    def test_native_unrepresentable_selected_lots_request_the_full_quantity(self):
+        cases = (
+            (
+                "native-quantity-grid",
+                2,
+                {"amount": 2e-18, "open_rate": 1e18, "lot": 1, "contract_size": 1e-20},
+                1e19,
+                9.329e20,
+            ),
+            (
+                "callback-float-grid",
+                8,
+                {
+                    "amount": 61063600.9973608,
+                    "open_rate": 0.000736753283349331,
+                    "lot": 9,
+                    "precision_mode": DECIMAL_PLACES,
+                },
+                None,
+                0.0,
+            ),
+        )
+        original_model = self.model
+        self.addCleanup(setattr, self, "model", original_model)
+        for name, stage_count, inputs, rate, min_cost in cases:
+            with (
+                self.subTest(name=name),
+                mock.patch.object(
+                    QuickAdapterV3, "exit_stages", dict.fromkeys(range(stage_count), "lime")
+                ),
+            ):
+                self.model = QuickAdapterV3(original_model.config)
+                self.model.freqai_info = original_model.config["freqai"]
+                self.model.bot_start()
+                self.model.dp = original_model.dp
+                position = self._filled_position(leverage=1.0, **inputs)
+                if rate is None:
+                    rate = self.model.get_take_profit_target(self.frame, position, 0)[0] * 1.1
+                self.assertEqual(
+                    self._native_partial_exit(position, rate, min_cost=min_cost),
+                    [inputs["amount"]],
+                )
 
     def test_native_fills_release_equal_lots_and_leave_one_share_for_the_final_exit(self):
         original_model = self.model
