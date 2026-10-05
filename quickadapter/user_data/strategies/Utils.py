@@ -1106,20 +1106,18 @@ def get_take_profit_stage_natr_multiplier_fractions(
 
 
 @lru_cache(maxsize=_CACHE_MAXSIZE_SMALL)
-def get_exit_stage_stake_fractions(partial_stage_count: int) -> tuple[float, ...]:
-    """Return each partial exit's share of the stake remaining at that stage.
+def get_exit_stage_stake_fractions(stage_count: int) -> tuple[float, ...]:
+    """Return each exit's share of the stake still open at that stage.
 
-    With ``partial_stage_count`` partial exits plus the final full exit, the
-    position is released in ``partial_stage_count + 1`` equal shares of its
-    initial stake. The remaining stake before stage ``k`` is
-    ``(n + 1 - k) / (n + 1)`` of the initial stake, so releasing ``1 / (n + 1)``
-    of it means closing ``1 / (n + 1 - k)`` of what is left. The final exit
-    needs no share: it closes the remainder.
+    A position split across ``stage_count`` exits releases ``1 / stage_count``
+    of its initial stake at each one. The stake remaining before stage ``k`` is
+    ``(stage_count - k) / stage_count`` of the initial one, so releasing
+    ``1 / (stage_count - k)`` of it closes exactly one share. The last stage
+    takes the whole remainder.
     """
-    if partial_stage_count < 0:
-        raise ValueError(f"Invalid partial_stage_count value {partial_stage_count!r}: must be >= 0")
-    exit_count = partial_stage_count + 1
-    return tuple(1.0 / (exit_count - stage) for stage in range(partial_stage_count))
+    if stage_count <= 0:
+        raise ValueError(f"Invalid stage_count value {stage_count!r}: must be >= 1")
+    return tuple(1.0 / (stage_count - stage) for stage in range(stage_count))
 
 
 SPARSE_TRAINING_MASS_THRESHOLD: Final[float] = 0.05

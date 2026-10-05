@@ -347,6 +347,121 @@ class RuntimeSizingTest(QaTestCase):
                     direction = "short" if short else "long"
                     self.assertEqual(after, (stake_reduction, f"take_profit_{direction}_0"))
 
+    def _walk_partial_stages(self, position, stage_count):
+        """Cross each partial target in turn and return what every stage released."""
+        released = []
+        store = {}
+        # Isolate only the custom-data store; targets and sizing stay native.
+        with (
+            mock.patch.object(
+                position,
+                "get_custom_data",
+                side_effect=lambda key, default=None, store=store: store.get(key, default),
+            ),
+            mock.patch.object(
+                position,
+                "set_custom_data",
+                side_effect=lambda key, value, store=store: store.update({key: value}),
+            ),
+        ):
+            for stage in range(stage_count):
+                target = self.model.get_take_profit_target(self.frame, position, stage)[0]
+                direction = -1.0 if position.is_short else 1.0
+                reduction, _ = self.model.adjust_trade_position(
+                    position,
+                    self.now,
+                    target + direction,
+                    0.2,
+                    1.0,
+                    1000.0,
+                    target + direction,
+                    target + direction,
+                    0.2,
+                    0.2,
+                )
+                self.assertIsNotNone(reduction, f"stage {stage} did not exit at its target")
+                released.append(-reduction)
+                # Only the open stake and the filled-exit count advance here.
+                position.stake_amount += reduction
+                position.orders.append(
+                    Order(
+                        ft_order_side=position.exit_side,
+                        ft_is_open=False,
+                        status="closed",
+                        filled=1.0,
+                        ft_order_tag=f"take_profit_{position.trade_direction}_{stage}",
+                    )
+                )
+        return released
+
+    def test_every_exit_releases_an_equal_share_of_the_initial_stake(self):
+        # The ladder splits the initial stake into equal absolute amounts, and
+        # the final full exit closes the last one.
+        initial_stake = 100.0
+        stage_count = len(QuickAdapterV3.exit_stages)
+        for short in (False, True):
+            with self.subTest(short=short):
+                position = self.position(short)
+                released = self._walk_partial_stages(position, stage_count - 1)
+                for released_stake in released:
+                    self.assertAlmostEqual(
+                        released_stake, initial_stake / stage_count, places=9, msg=str(released)
+                    )
+                self.assertAlmostEqual(position.stake_amount, initial_stake / stage_count, places=9)
+
+    def test_the_stake_shares_resize_with_the_stage_count(self):
+        initial_stake = 100.0
+        for stage_count in (2, 3, 5):
+            with self.subTest(stage_count=stage_count):
+                stages = dict.fromkeys(range(stage_count), "lime")
+                with mock.patch.object(QuickAdapterV3, "exit_stages", stages):
+                    # A fresh model so its derived ladders follow the new count.
+                    model = QuickAdapterV3(self.model.config)
+                    model.freqai_info = self.model.config["freqai"]
+                    model.bot_start()
+                    model.dp = self.model.dp
+                    previous_model = self.model
+                    self.model = model
+                    for short in (False, True):
+                        position = self.position(short)
+                        released = self._walk_partial_stages(position, stage_count - 1)
+                        self.assertEqual(len(released), stage_count - 1)
+                        for released_stake in released:
+                            self.assertAlmostEqual(
+                                released_stake,
+                                initial_stake / stage_count,
+                                places=9,
+                                msg=f"{stage_count} stages: {released}",
+                            )
+                        self.assertAlmostEqual(
+                            position.stake_amount, initial_stake / stage_count, places=9
+                        )
+                    self.model = previous_model
+
+    def test_the_final_stage_takes_the_remainder_the_partials_left(self):
+        stage_count = len(QuickAdapterV3.exit_stages)
+        position = self.position()
+        released = self._walk_partial_stages(position, stage_count - 1)
+        self.assertEqual(QuickAdapterV3.get_trade_exit_stage(position), stage_count - 1)
+        # Past the last partial rung the ladder must stop requesting reductions.
+        self.assertIsNone(
+            self.model.adjust_trade_position(
+                position,
+                self.now,
+                1e9,
+                0.2,
+                1.0,
+                1000.0,
+                position.open_rate,
+                1e9,
+                0.2,
+                0.2,
+            )
+        )
+        # The final exit closes whatever remains, one share of the initial stake.
+        self.assertAlmostEqual(position.stake_amount, 100.0 / stage_count, places=9)
+        self.assertEqual(len(released), stage_count - 1)
+
     def test_expired_models_exit_before_order_stage_and_date_guards(self):
         self.frame.loc[self.frame.index[-1], "date"] = pd.NaT
         self.frame["do_predict"] = 2
