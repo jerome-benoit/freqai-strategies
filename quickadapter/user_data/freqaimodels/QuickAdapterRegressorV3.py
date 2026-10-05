@@ -48,8 +48,10 @@ from LabelTransformer import (
     CUSTOM_THRESHOLD_METHODS,
     EXTREMA_SELECTION_METHODS,
     LABEL_WEIGHT_SUPPORT_POLICIES,
+    NORMALIZATION_TYPES,
     PREDICTION_METHODS,
     SKIMAGE_THRESHOLD_METHODS,
+    STANDARDIZATION_TYPES,
     ExtremaSelectionMethod,
     LabelTransformer,
     LabelWeightSupportPolicy,
@@ -450,7 +452,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     https://github.com/sponsors/robcaulk
     """
 
-    version = "3.13.0-rc.13"
+    version = "3.13.0-rc.14"
 
     _CALIBRATION_START_KEY: Final[str] = "quickadapter_calibration_start"
     _DEPLOYMENT_COORDINATE_MARKER_KEY: Final[str] = "quickadapter_deployment_coordinates"
@@ -1630,11 +1632,14 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     def _causal_mode(self) -> bool:
         return get_causal_mode(self.ft_params, logger)
 
-    def _label_horizon_candles(self, pair: str | None = None) -> int:
-        if pair is None:
-            return get_label_horizon_candles(self.ft_params, logger)
-        label_params = self.get_optuna_params(pair, _OPTUNA_NAMESPACES.label)
-        return get_label_horizon_candles({**self.ft_params, **label_params}, logger)
+    def _label_horizon_candles(
+        self, pair: str | None = None, *, warning_messages: set[str] | None = None
+    ) -> int:
+        config = self.ft_params
+        if pair is not None:
+            label_params = self.get_optuna_params(pair, _OPTUNA_NAMESPACES.label)
+            config = {**config, **label_params}
+        return get_label_horizon_candles(config, logger, warning_messages=warning_messages)
 
     @property
     def _optuna_label_candle_pool_full(self) -> list[int]:
@@ -1721,6 +1726,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         self.regressor: Regressor = self.freqai_info.get("regressor", DEFAULT_REGRESSOR)
         if self.regressor not in set(REGRESSORS):
+            logger.warning(
+                "%s, using default %r",
+                enum_error_message("freqai.regressor", self.regressor, REGRESSORS),
+                DEFAULT_REGRESSOR,
+            )
             self.regressor = DEFAULT_REGRESSOR
             self.freqai_info["regressor"] = self.regressor
         self._log_model_configuration()
@@ -1733,10 +1743,89 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         logger.info(f"Model Version: {self.version}")
         logger.info(f"Regressor: {self.regressor}")
 
+        split_parameters = self.data_split_parameters
+        split_method = split_parameters.get(
+            "method", QuickAdapterRegressorV3.DATA_SPLIT_METHOD_DEFAULT
+        )
+        logger.info("Data Split:")
+        logger.info(f"  method: {split_method}")
+        if split_method == QuickAdapterRegressorV3._DATA_SPLIT_TIMESERIES:
+            test_size = split_parameters.get("test_size")
+            logger.info(
+                f"  test_size: {format_number(test_size) if test_size is not None else 'dynamic (dataset size and n_splits)'}"
+            )
+            logger.info(
+                f"  n_splits: {split_parameters.get('n_splits', QuickAdapterRegressorV3.TIMESERIES_N_SPLITS_DEFAULT)}"
+            )
+            gap = split_parameters.get("gap")
+            if gap is None:
+                gap = QuickAdapterRegressorV3.TIMESERIES_GAP_DEFAULT
+            if gap == 0:
+                gap_source = (
+                    "label_horizon_candles" if self._causal_mode else "label_period_candles"
+                )
+                logger.info(
+                    f"  gap: automatic from per-pair {gap_source} (deferred until training)"
+                )
+            else:
+                logger.info(f"  gap: {gap}")
+            logger.info(
+                f"  max_train_size: {split_parameters.get('max_train_size', QuickAdapterRegressorV3.TIMESERIES_MAX_TRAIN_SIZE_DEFAULT)}"
+            )
+        else:
+            logger.info(
+                f"  test_size: {format_number(split_parameters.get('test_size', QuickAdapterRegressorV3._TEST_SIZE))}"
+            )
+            for key in ("train_size", "random_state", "stratify"):
+                if key in split_parameters:
+                    logger.info(f"  {key}: {split_parameters[key]}")
+        logger.info(f"  validation_size: {format_number(self._get_validation_size())}")
+
+        logger.info("Causality and Ordering:")
+        logger.info(f"  causal_mode: {self._causal_mode}")
+        logger.info(f"  shuffle: {split_parameters.get('shuffle', False)}")
+        logger.info(f"  shuffle_after_split: {self.ft_params.get('shuffle_after_split', False)}")
+        logger.info(
+            f"  reverse_train_test_order: {self.ft_params.get('reverse_train_test_order', False)}"
+        )
+
+        logger.info("Training:")
+        logger.info(f"  continual_learning: {self.continual_learning}")
+        logger.info("Configured Model Training Overrides:")
+        logger.info("  These overrides are not final fitted, HPO-selected or refit parameters.")
+        logger.info(
+            f"  model_training_parameters: {format_dict(self.model_training_parameters, style=_FORMAT_STYLE_DICT)}"
+        )
+
         logger.info("Optuna Hyperopt:")
         optuna_config = self._optuna_config
         logger.info(f"  enabled: {optuna_config.get('enabled')}")
+        logger.info(f"  active: {bool(self._optuna_hyperopt)}")
+        label_method = self.ft_params.get(
+            "label_method", QuickAdapterRegressorV3.LABEL_METHOD_DEFAULT
+        )
+        label_config = {}
+        formatted_label_weights = None
+        label_p_order = None
+        label_p_order_config = self.ft_params.get("label_p_order")
+        # Preserve the configured-enabled validation boundary even when HPO is inactive.
         if optuna_config.get("enabled"):
+            label_config = self._resolve_label_method_config(label_method)
+            label_weights = self.ft_params.get("label_weights")
+            if label_weights is not None:
+                formatted_label_weights = [format_number(w) for w in label_weights]
+            if label_p_order_config is not None:
+                label_p_order = float(label_p_order_config)
+
+        if not self._optuna_hyperopt:
+            if not optuna_config.get("enabled"):
+                inactive_reason = "configuration disabled"
+            elif not self.freqai_info.get("enabled", False):
+                inactive_reason = "FreqAI disabled"
+            else:
+                inactive_reason = "zero validation/holdout size"
+            logger.info(f"  inactive_reason: {inactive_reason}")
+        else:
             logger.info(f"  n_jobs: {optuna_config.get('n_jobs')}")
             logger.info(f"  sampler: {optuna_config.get('sampler')}")
             logger.info(f"  storage: {optuna_config.get('storage')}")
@@ -1759,24 +1848,18 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
             logger.info(f"  label_sampler: {optuna_config.get('label_sampler')}")
             logger.info(f"  label_candles_step: {optuna_config.get('label_candles_step')}")
-            label_method = self.ft_params.get(
-                "label_method", QuickAdapterRegressorV3.LABEL_METHOD_DEFAULT
-            )
+
             logger.info(f"  label_method: {label_method}")
 
-            label_config = self._resolve_label_method_config(label_method)
             QuickAdapterRegressorV3._log_label_method_config(label_config)
 
-            label_weights = self.ft_params.get("label_weights")
-            if label_weights is not None:
-                formatted_label_weights = [format_number(w) for w in label_weights]
+            if formatted_label_weights is not None:
                 logger.info(f"  label_weights: [{', '.join(formatted_label_weights)}]")
             else:
                 logger.info("  label_weights: [1.0, ...] * n_objectives, l1 normalized (default)")
 
-            label_p_order_config = self.ft_params.get("label_p_order")
             if label_p_order_config is not None:
-                logger.info(f"  label_p_order: {format_number(float(label_p_order_config))}")
+                logger.info(f"  label_p_order: {format_number(label_p_order)}")
             else:
                 distance_metric = label_config["distance_metric"]
                 if distance_metric in {
@@ -1800,17 +1883,21 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
             logger.info("  Pipeline:")
             logger.info(f"    standardization: {col_pipeline['standardization']}")
-            logger.info(
-                f"    robust_quantiles: ({format_number(col_pipeline['robust_quantiles'][0])}, {format_number(col_pipeline['robust_quantiles'][1])})"
-            )
-            logger.info(
-                f"    mmad_scaling_factor: {format_number(col_pipeline['mmad_scaling_factor'])}"
-            )
+            if col_pipeline["standardization"] == STANDARDIZATION_TYPES[2]:  # "robust"
+                logger.info(
+                    f"    robust_quantiles: ({format_number(col_pipeline['robust_quantiles'][0])}, {format_number(col_pipeline['robust_quantiles'][1])})"
+                )
+            elif col_pipeline["standardization"] == STANDARDIZATION_TYPES[3]:  # "mmad"
+                logger.info(
+                    f"    mmad_scaling_factor: {format_number(col_pipeline['mmad_scaling_factor'])}"
+                )
             logger.info(f"    normalization: {col_pipeline['normalization']}")
-            logger.info(
-                f"    minmax_range: ({format_number(col_pipeline['minmax_range'][0])}, {format_number(col_pipeline['minmax_range'][1])})"
-            )
-            logger.info(f"    sigmoid_scale: {format_number(col_pipeline['sigmoid_scale'])}")
+            if col_pipeline["normalization"] == NORMALIZATION_TYPES[1]:  # "minmax"
+                logger.info(
+                    f"    minmax_range: ({format_number(col_pipeline['minmax_range'][0])}, {format_number(col_pipeline['minmax_range'][1])})"
+                )
+            elif col_pipeline["normalization"] == NORMALIZATION_TYPES[2]:  # "sigmoid"
+                logger.info(f"    sigmoid_scale: {format_number(col_pipeline['sigmoid_scale'])}")
             logger.info(f"    gamma: {format_number(col_pipeline['gamma'])}")
 
             col_prediction = get_label_column_config(
@@ -1818,15 +1905,22 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
             logger.info("  Prediction:")
             logger.info(f"    method: {col_prediction['method']}")
-            logger.info(f"    selection_method: {col_prediction['selection_method']}")
-            logger.info(f"    threshold_method: {col_prediction['threshold_method']}")
-            logger.info(
-                f"    outlier_quantile: {format_number(col_prediction['outlier_quantile'])}"
-            )
-            logger.info(
-                f"    soft_extremum_alpha: {format_number(col_prediction['soft_extremum_alpha'])}"
-            )
-            logger.info(f"    keep_fraction: {format_number(col_prediction['keep_fraction'])}")
+            if col_prediction["method"] == PREDICTION_METHODS[1]:  # "thresholding"
+                logger.info(f"    selection_method: {col_prediction['selection_method']}")
+                logger.info(f"    threshold_method: {col_prediction['threshold_method']}")
+                logger.info(
+                    f"    outlier_quantile: {format_number(col_prediction['outlier_quantile'])}"
+                )
+                if (
+                    col_prediction["threshold_method"] == CUSTOM_THRESHOLD_METHODS[1]
+                ):  # "soft_extremum"
+                    logger.info(
+                        f"    soft_extremum_alpha: {format_number(col_prediction['soft_extremum_alpha'])}"
+                    )
+                if col_prediction["selection_method"] in EXTREMA_SELECTION_METHODS[:2]:
+                    logger.info(
+                        f"    keep_fraction: {format_number(col_prediction['keep_fraction'])}"
+                    )
             if col_prediction["method"] == PREDICTION_METHODS[0]:  # "none"
                 logger.warning(
                     f"  Prediction method is 'none' for label [{label_col}]: "
@@ -1834,53 +1928,41 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                     f"entry signals based on them will never trigger."
                 )
 
-        default_label_period_candles, default_label_natr_multiplier = self._label_defaults
-        label_period_candles = self.ft_params.get(
-            "label_period_candles", default_label_period_candles
-        )
-        label_natr_multiplier = float(
-            self.ft_params.get("label_natr_multiplier", default_label_natr_multiplier)
-        )
-        logger.info("Label Hyperparameters:")
+        logger.info("Label Parameters:")
         logger.info(f"  fit_live_predictions_candles: {self._fit_live_predictions_candles}")
-        if self._optuna_hyperopt:
-            logger.info(f"  label_period_candles: {label_period_candles} (initial value)")
+        horizon_warning_messages: set[str] = set()
+        for pair in self.pairs:
+            params = self.get_optuna_params(pair, _OPTUNA_NAMESPACES.label)
+            horizon = self._label_horizon_candles(pair, warning_messages=horizon_warning_messages)
             logger.info(
-                f"  label_natr_multiplier: {format_number(label_natr_multiplier)} (initial value)"
+                f"  {pair}: label_period_candles={params.get('label_period_candles')}, "
+                f"label_natr_multiplier={format_number(params.get('label_natr_multiplier'))}, "
+                f"label_horizon_candles={horizon} (resolved at startup)"
             )
-        logger.info(f"  label_frequency_candles: {self._label_frequency_candles}")
-        logger.info(f"  min_label_period_candles: {self._min_label_period_candles}")
-        logger.info(f"  max_label_period_candles: {self._max_label_period_candles}")
-        logger.info(
-            f"  min_label_natr_multiplier: {format_number(self._min_label_natr_multiplier)}"
-        )
-        logger.info(
-            f"  max_label_natr_multiplier: {format_number(self._max_label_natr_multiplier)}"
-        )
 
+        label_frequency_candles = self._label_frequency_candles
         if self._optuna_hyperopt:
-            logger.info("Label Parameters:")
-            for pair in self.pairs:
-                params = self._optuna_label_params.get(pair, {})
-                if params:
-                    logger.info(
-                        f"  {pair}: label_period_candles={params.get('label_period_candles')}, "
-                        f"label_natr_multiplier={format_number(params.get('label_natr_multiplier'))}, "
-                        f"label_horizon_candles={self._label_horizon_candles(pair)}"
-                    )
-        else:
-            logger.info("Label Parameters:")
-            logger.info(f"  label_period_candles: {label_period_candles}")
-            logger.info(f"  label_natr_multiplier: {format_number(label_natr_multiplier)}")
-            logger.info(f"  label_horizon_candles: {self._label_horizon_candles()}")
+            logger.info("Label Hyperparameters:")
+            logger.info(f"  label_frequency_candles: {label_frequency_candles}")
+            logger.info(f"  min_label_period_candles: {self._min_label_period_candles}")
+            logger.info(f"  max_label_period_candles: {self._max_label_period_candles}")
+            logger.info(
+                f"  min_label_natr_multiplier: {format_number(self._min_label_natr_multiplier)}"
+            )
+            logger.info(
+                f"  max_label_natr_multiplier: {format_number(self._max_label_natr_multiplier)}"
+            )
 
         scaler = self.ft_params.get("scaler", QuickAdapterRegressorV3.SCALER_DEFAULT)
         feature_range = self.ft_params.get("range", QuickAdapterRegressorV3.RANGE_DEFAULT)
-        logger.info("Feature Parameters:")
-        logger.info(f"  scaler: {scaler}")
-        logger.info(
+        # Preserve range resolution independently of whether the selected scaler uses it.
+        formatted_feature_range = (
             f"  range: ({format_number(feature_range[0])}, {format_number(feature_range[1])})"
         )
+        logger.info("Feature Parameters:")
+        logger.info(f"  scaler: {scaler}")
+        if scaler == QuickAdapterRegressorV3.SCALER_DEFAULT:  # "minmax"
+            logger.info(formatted_feature_range)
 
         logger.info("=" * 60)
 

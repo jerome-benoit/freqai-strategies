@@ -3,6 +3,7 @@
 import datetime
 import math
 import unittest
+from itertools import pairwise
 from types import SimpleNamespace
 from unittest import mock
 
@@ -13,6 +14,10 @@ from EnumErrors import enum_error_message
 from numpy.testing import assert_allclose
 from qa_support import PAIR, QaTestCase
 from QuickAdapterV3 import QuickAdapterV3
+from Utils import (
+    TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_SERIES,
+    get_take_profit_stage_natr_multiplier_fractions,
+)
 
 LONG = QuickAdapterV3._TRADE_LONG
 SHORT = QuickAdapterV3._TRADE_SHORT
@@ -73,7 +78,7 @@ def candles(
     return frame
 
 
-def strategy(label_period_candles=4, label_natr_multiplier=MULTIPLIER):
+def strategy(label_period_candles=4, label_natr_multiplier=MULTIPLIER, fraction_series=None):
     """A candle-cache strategy whose label parameters come from the pair, not the frame."""
     model = object.__new__(QuickAdapterV3)
     model._candle_deviation_cache = {}
@@ -91,6 +96,10 @@ def strategy(label_period_candles=4, label_natr_multiplier=MULTIPLIER):
         "timeframe": TIMEFRAME,
         "exit_pricing": {"trade_natr_method": "quantile_interpolation"},
     }
+    if fraction_series is not None:
+        model.config["exit_pricing"]["take_profit_stage_natr_multiplier_fraction_series"] = (
+            fraction_series
+        )
     return model
 
 
@@ -529,10 +538,12 @@ class StrategyFeaturesTest(QaTestCase):
         long_trade = trade()
         # One candle of duration, a two-value trade NATR window and multiplier 3.0 make the
         # distance open_rate * 0.07 * 3.0 * fraction * log10(10), and log10(10) is exactly 1.
-        for stage, params in sorted(QuickAdapterV3.partial_exit_stages.items()):
+        for stage in sorted(QuickAdapterV3.partial_exit_stages):
             with self.subTest(stage=stage):
-                fraction = params[0]
+                fraction = model.partial_exit_stage_natr_multiplier_fractions[stage]
                 self.assertIsInstance(fraction, float)
+                self.assertGreater(fraction, 0.0)
+                self.assertLess(fraction, 1.0)
                 distance = 100.0 * 0.07 * MULTIPLIER * fraction
                 target = model.get_take_profit_target(frame, long_trade, stage)
                 self.assertIsNotNone(target)
@@ -552,6 +563,120 @@ class StrategyFeaturesTest(QaTestCase):
             for stage in (0, 1, 2, QuickAdapterV3._FINAL_EXIT_STAGE)
         ]
         self.assertEqual(stages, sorted(stages))
+
+    def test_the_fibonacci_extensions_define_the_default_partial_ladder(self):
+        # Frozen reference rungs, not a restatement of the formula: a change of
+        # base or of the stage count must fail here. They are phi**-3, phi**-2
+        # and phi**-1 rounded to six decimals.
+        assert_allclose(
+            tuple(strategy().partial_exit_stage_natr_multiplier_fractions.values()),
+            (0.236068, 0.381966, 0.618034),
+            rtol=1e-6,
+        )
+        self.assertEqual(strategy().get_exit_stage_natr_multiplier_fraction(99), 1.0)
+
+    def test_every_series_raises_its_fraction_with_the_stage_index(self):
+        for series in TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_SERIES:
+            with self.subTest(series=series):
+                # Stage fractions follow stage indices, not insertion order.
+                reordered_stages = dict(
+                    sorted(QuickAdapterV3.partial_exit_stages.items(), reverse=True)
+                )
+                with mock.patch.object(QuickAdapterV3, "partial_exit_stages", reordered_stages):
+                    model = strategy(fraction_series=series)
+                    by_stage = model.partial_exit_stage_natr_multiplier_fractions
+                    stages = sorted(QuickAdapterV3.partial_exit_stages)
+                    self.assertEqual(sorted(by_stage), stages)
+                    for earlier, later in pairwise(stages):
+                        self.assertLess(by_stage[earlier], by_stage[later])
+
+    def test_no_series_ladder_reaches_the_final_stage_fraction(self):
+        for series in TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_SERIES:
+            with self.subTest(series=series):
+                fractions = tuple(
+                    strategy(
+                        fraction_series=series
+                    ).partial_exit_stage_natr_multiplier_fractions.values()
+                )
+                self.assertNotIn(1.0, fractions)
+                self.assertEqual(max(fractions), fractions[-1])
+
+    def test_the_ladder_is_indexed_by_the_stage_count(self):
+        self.assertEqual(
+            len(get_take_profit_stage_natr_multiplier_fractions("fibonacci_extensions", 0)), 0
+        )
+        for count in (1, 2, 3, 4, 5):
+            with self.subTest(count=count):
+                fractions = get_take_profit_stage_natr_multiplier_fractions(
+                    "fibonacci_extensions", count
+                )
+                self.assertEqual(len(fractions), count)
+                self.assertEqual(max(fractions), fractions[-1])
+
+    def test_the_pi_extensions_define_the_partial_ladder(self):
+        assert_allclose(
+            tuple(
+                strategy(
+                    fraction_series="pi_extensions"
+                ).partial_exit_stage_natr_multiplier_fractions.values()
+            ),
+            (0.03225153, 0.10132118, 0.31830989),
+            rtol=1e-6,
+        )
+
+    def test_selecting_a_series_changes_the_stage_distances(self):
+        frame = candles([100.0, 100.0, 100.0], natr=[1.0, 4.0, 8.0], multiplier=MULTIPLIER)
+        long_trade = trade()
+        fibonacci = strategy(fraction_series="fibonacci_extensions")
+        pi = strategy(fraction_series="pi_extensions")
+        self.assertEqual(pi.take_profit_stage_natr_multiplier_fraction_series, "pi_extensions")
+        for stage in sorted(QuickAdapterV3.partial_exit_stages):
+            with self.subTest(stage=stage):
+                fibonacci_distance = fibonacci.get_take_profit_target(frame, long_trade, stage)[1]
+                pi_distance = pi.get_take_profit_target(frame, long_trade, stage)[1]
+                # The larger pi extension base yields smaller reciprocal fractions.
+                self.assertLess(pi_distance, fibonacci_distance)
+        # The final distance is independent of the partial extension series.
+        self.assertEqual(
+            fibonacci.get_take_profit_target(frame, long_trade, QuickAdapterV3._FINAL_EXIT_STAGE),
+            pi.get_take_profit_target(frame, long_trade, QuickAdapterV3._FINAL_EXIT_STAGE),
+        )
+
+    def test_fraction_series_validates_names_and_stage_counts(self):
+        with self.assertRaises(ValueError):
+            get_take_profit_stage_natr_multiplier_fractions("not_a_series", 3)
+        self.assertEqual(
+            get_take_profit_stage_natr_multiplier_fractions("fibonacci_extensions", 0), ()
+        )
+        assert_allclose(
+            get_take_profit_stage_natr_multiplier_fractions("fibonacci_extensions", 1),
+            (0.618033988749895,),
+            rtol=1e-14,
+        )
+
+    def test_a_degenerate_ladder_base_is_refused_by_name(self):
+        from Utils import _TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_BASES
+
+        for name, base in (("zero", 0.0), ("unit", 1.0), ("near", 1.0 + 2**-52)):
+            with self.subTest(base=base):
+                _TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_BASES[name] = base
+                self.addCleanup(_TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_BASES.pop, name, None)
+                self.addCleanup(get_take_profit_stage_natr_multiplier_fractions.cache_clear)
+                with self.assertRaises(ValueError) as raised:
+                    get_take_profit_stage_natr_multiplier_fractions(name, 3)
+                self.assertIn(name, str(raised.exception))
+
+    def test_an_underflowing_ladder_is_refused(self):
+        # pi**-650 is the smallest positive subnormal; pi**-651 underflows to 0.0.
+        fractions = get_take_profit_stage_natr_multiplier_fractions("pi_extensions", 650)
+        self.assertEqual(len(fractions), 650)
+        self.assertEqual(fractions[0], math.ulp(0.0))
+        with self.assertRaises(ValueError):
+            get_take_profit_stage_natr_multiplier_fractions("pi_extensions", 651)
+
+    def test_a_negative_partial_stage_count_is_rejected(self):
+        with self.assertRaises(ValueError):
+            get_take_profit_stage_natr_multiplier_fractions("fibonacci_extensions", -1)
 
     def test_a_short_take_profit_target_flips_the_sign(self):
         model = strategy()

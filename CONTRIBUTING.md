@@ -50,6 +50,10 @@ teardown errors; each test still owns isolation of any other mutable state.
 The reward-space analysis suite runs separately with `uv`, without a Freqtrade
 image.
 
+Regression tests should cover behavior, numerical boundaries and error conditions.
+For private diagnostics, check the exception type and relevant input identity;
+do not pin incidental wording, number formatting or arbitrary message lengths.
+
 ## Coverage gate
 
 Both strategy suites enforce their own runtime coverage gates. ReforceXY
