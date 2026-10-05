@@ -460,11 +460,11 @@ class QuickAdapterV3(IStrategy):
 
     @cached_property
     def exit_stage_stake_fractions(self) -> dict[int, float]:
-        """Share of the stake still open that each stage releases.
+        """Nominal share of the stake still open that each stage requests.
 
-        With ``n`` stages, stage ``k`` closes ``1 / (n - k)`` of the remaining
-        stake, so every stage releases exactly ``1 / n`` of the initial stake
-        and the last one closes the remainder.
+        With ``n`` stages, stage ``k`` requests ``1 / (n - k)`` of the remaining
+        stake: nominally ``1 / n`` of the initial stake with complete fills and
+        no exchange sizing adjustments. The last stage closes the remainder.
         """
         fractions = get_exit_stage_stake_fractions(len(QuickAdapterV3.exit_stages))
         return dict(zip(sorted(QuickAdapterV3.exit_stages), fractions, strict=True))
@@ -693,7 +693,7 @@ class QuickAdapterV3(IStrategy):
         stage_count = len(QuickAdapterV3.exit_stages)
         distance_fractions = self.exit_stage_natr_multiplier_fractions
         stake_fractions = self.exit_stage_stake_fractions
-        logger.info(f"Exit Stages: {stage_count} equal shares of the initial stake")
+        logger.info(f"Exit Stages: {stage_count} nominally equal shares of the initial stake")
         for stage in sorted(QuickAdapterV3.exit_stages):
             logger.info(
                 f"  stage {stage}: natr_multiplier_fraction="
@@ -1947,8 +1947,7 @@ class QuickAdapterV3(IStrategy):
                 ),
             )
         if trade_partial_exit:
-            trade_stake_fraction = self.exit_stage_stake_fractions[trade_exit_stage]
-            trade_partial_stake_amount = trade_stake_fraction * trade.stake_amount
+            remaining_stages = len(QuickAdapterV3.exit_stages) - trade_exit_stage
             tag = (
                 f"{QuickAdapterV3._TAKE_PROFIT_ORDER_TAG_PREFIX}"
                 f"{trade.trade_direction}_{trade_exit_stage}"
@@ -1971,18 +1970,11 @@ class QuickAdapterV3(IStrategy):
             current_position_value = trade.amount * current_exit_rate
             if current_position_value <= remaining_minimum_value:
                 return -trade.stake_amount, tag
-            trade_partial_stake_amount = min(
-                trade_partial_stake_amount,
-                trade.stake_amount * (1 - remaining_minimum_value / current_position_value),
-            )
             exit_amount = exchange.amount_to_contract_precision(
                 pair,
-                abs(
-                    float(
-                        FtPrecise(trade_partial_stake_amount)
-                        * FtPrecise(trade.amount)
-                        / FtPrecise(trade.stake_amount)
-                    )
+                min(
+                    float(FtPrecise(trade.amount) / FtPrecise(remaining_stages)),
+                    trade.amount - remaining_minimum_value / current_exit_rate,
                 ),
             )
             if (
@@ -1990,6 +1982,33 @@ class QuickAdapterV3(IStrategy):
                 or exit_amount * current_exit_rate < exit_minimum_value
                 or (trade.amount - exit_amount) * current_exit_rate < remaining_minimum_value
             ):
+                return -trade.stake_amount, tag
+            # Freqtrade truncates its stake-to-quantity quotient to 18 decimal places.
+            # Use the smallest native quotient that quantizes to the selected exchange lot.
+            precise_exit_amount = FtPrecise(exit_amount)
+            native_exit_amount = precise_exit_amount / FtPrecise(1)
+            if native_exit_amount < precise_exit_amount:
+                native_exit_amount += FtPrecise("1e-18")
+            native_exit_quantity = float(native_exit_amount)
+            if exchange.amount_to_contract_precision(pair, native_exit_quantity) != exit_amount:
+                return -trade.stake_amount, tag
+            trade_partial_stake_amount = native_exit_quantity / trade.amount * trade.stake_amount
+            while True:
+                roundtrip_amount = exchange.amount_to_contract_precision(
+                    pair,
+                    abs(
+                        float(
+                            FtPrecise(trade_partial_stake_amount)
+                            * FtPrecise(trade.amount)
+                            / FtPrecise(trade.stake_amount)
+                        )
+                    ),
+                )
+                if roundtrip_amount >= exit_amount:
+                    break
+                # Advance only when the callback float would lose a selected lot.
+                trade_partial_stake_amount = math.nextafter(trade_partial_stake_amount, math.inf)
+            if roundtrip_amount != exit_amount:
                 return -trade.stake_amount, tag
             return (
                 -trade_partial_stake_amount,

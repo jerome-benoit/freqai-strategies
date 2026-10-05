@@ -1053,8 +1053,8 @@ TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_SERIES: Final[
 # These fractions place partial targets inside the full take-profit distance;
 # they do not extend it. Fibonacci uses integer powers of phi; pi uses integer
 # powers of pi as a custom geometric construction, not a trading convention.
-# The final fraction ``1.0`` is the separate ``_FINAL_EXIT_STAGE_PARAMS``
-# literal.
+# The strategy appends the final fraction ``1.0`` to the generated
+# partial-target distance ladder.
 _TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_BASES: Final[dict[str, float]] = {
     "fibonacci_extensions": (1.0 + math.sqrt(5.0)) / 2.0,
     "pi_extensions": math.pi,

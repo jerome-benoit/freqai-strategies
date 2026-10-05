@@ -4,12 +4,16 @@ import copy
 import datetime
 import math
 import unittest
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 from unittest import mock
 
 import numpy as np
 import pandas as pd
+from ccxt import TICK_SIZE
 from freqtrade.enums import RunMode
+from freqtrade.exchange import Exchange
+from freqtrade.exchange.exchange_utils import amount_to_contract_precision
+from freqtrade.freqtradebot import FreqtradeBot
 from freqtrade.persistence import Order, Trade
 from qa_support import PAIR, QaTestCase, model_config, temporary_directory
 from QuickAdapterV3 import QuickAdapterV3
@@ -347,120 +351,157 @@ class RuntimeSizingTest(QaTestCase):
                     direction = "short" if short else "long"
                     self.assertEqual(after, (stake_reduction, f"take_profit_{direction}_0"))
 
-    def _walk_partial_stages(self, position, stage_count):
-        """Cross each partial target in turn and return what every stage released."""
-        released = []
-        store = {}
-        # Isolate only the custom-data store; targets and sizing stay native.
-        with (
-            mock.patch.object(
-                position,
-                "get_custom_data",
-                side_effect=lambda key, default=None, store=store: store.get(key, default),
-            ),
-            mock.patch.object(
-                position,
-                "set_custom_data",
-                side_effect=lambda key, value, store=store: store.update({key: value}),
-            ),
-        ):
-            for stage in range(stage_count):
-                target = self.model.get_take_profit_target(self.frame, position, stage)[0]
-                direction = -1.0 if position.is_short else 1.0
-                reduction, _ = self.model.adjust_trade_position(
-                    position,
-                    self.now,
-                    target + direction,
-                    0.2,
-                    1.0,
-                    1000.0,
-                    target + direction,
-                    target + direction,
-                    0.2,
-                    0.2,
-                )
-                self.assertIsNotNone(reduction, f"stage {stage} did not exit at its target")
-                released.append(-reduction)
-                # Only the open stake and the filled-exit count advance here.
-                position.stake_amount += reduction
-                position.orders.append(
-                    Order(
-                        ft_order_side=position.exit_side,
-                        ft_is_open=False,
-                        status="closed",
-                        filled=1.0,
-                        ft_order_tag=f"take_profit_{position.trade_direction}_{stage}",
-                    )
-                )
-        return released
-
-    def test_every_exit_releases_an_equal_share_of_the_initial_stake(self):
-        # The ladder splits the initial stake into equal absolute amounts, and
-        # the final full exit closes the last one.
-        initial_stake = 100.0
-        stage_count = len(QuickAdapterV3.exit_stages)
-        for short in (False, True):
-            with self.subTest(short=short):
-                position = self.position(short)
-                released = self._walk_partial_stages(position, stage_count - 1)
-                for released_stake in released:
-                    self.assertAlmostEqual(
-                        released_stake, initial_stake / stage_count, places=9, msg=str(released)
-                    )
-                self.assertAlmostEqual(position.stake_amount, initial_stake / stage_count, places=9)
-
-    def test_the_stake_shares_resize_with_the_stage_count(self):
-        initial_stake = 100.0
-        for stage_count in (2, 3, 5):
-            with self.subTest(stage_count=stage_count):
-                stages = dict.fromkeys(range(stage_count), "lime")
-                with mock.patch.object(QuickAdapterV3, "exit_stages", stages):
-                    # A fresh model so its derived ladders follow the new count.
-                    model = QuickAdapterV3(self.model.config)
-                    model.freqai_info = self.model.config["freqai"]
-                    model.bot_start()
-                    model.dp = self.model.dp
-                    previous_model = self.model
-                    self.model = model
-                    for short in (False, True):
-                        position = self.position(short)
-                        released = self._walk_partial_stages(position, stage_count - 1)
-                        self.assertEqual(len(released), stage_count - 1)
-                        for released_stake in released:
-                            self.assertAlmostEqual(
-                                released_stake,
-                                initial_stake / stage_count,
-                                places=9,
-                                msg=f"{stage_count} stages: {released}",
-                            )
-                        self.assertAlmostEqual(
-                            position.stake_amount, initial_stake / stage_count, places=9
-                        )
-                    self.model = previous_model
-
-    def test_the_final_stage_takes_the_remainder_the_partials_left(self):
-        stage_count = len(QuickAdapterV3.exit_stages)
-        position = self.position()
-        released = self._walk_partial_stages(position, stage_count - 1)
-        self.assertEqual(QuickAdapterV3.get_trade_exit_stage(position), stage_count - 1)
-        # Past the last partial rung the ladder must stop requesting reductions.
-        self.assertIsNone(
-            self.model.adjust_trade_position(
-                position,
-                self.now,
-                1e9,
-                0.2,
-                1.0,
-                1000.0,
-                position.open_rate,
-                1e9,
-                0.2,
-                0.2,
-            )
+    def _filled_order(self, position, amount, rate, tag=None):
+        return Order(
+            order_id=str(len(position.orders)),
+            ft_pair=PAIR,
+            ft_order_side=position.entry_side if tag is None else position.exit_side,
+            ft_is_open=False,
+            status="closed",
+            filled=amount,
+            amount=amount,
+            price=rate,
+            average=rate,
+            cost=amount * rate,
+            order_date=self.now - datetime.timedelta(minutes=5),
+            order_filled_date=self.now,
+            ft_order_tag=tag,
         )
-        # The final exit closes whatever remains, one share of the initial stake.
-        self.assertAlmostEqual(position.stake_amount, 100.0 / stage_count, places=9)
-        self.assertEqual(len(released), stage_count - 1)
+
+    def _filled_position(
+        self, short=False, leverage=2.0, amount=2.0, open_rate=123.4, lot=0.01, contract_size=1.0
+    ):
+        position = Trade(
+            pair=PAIR,
+            open_rate=open_rate,
+            open_date=self.now - datetime.timedelta(minutes=5),
+            is_short=short,
+            stake_amount=amount * open_rate / leverage,
+            amount=amount,
+            leverage=leverage,
+            exchange="binance",
+            fee_open=0.0,
+            fee_close=0.0,
+            amount_precision=lot,
+            precision_mode=TICK_SIZE,
+            contract_size=contract_size,
+            orders=[],
+        )
+        position.orders.append(self._filled_order(position, amount, open_rate))
+        position.recalc_trade_from_orders()
+        self.custom_data(position)
+        return position
+
+    def _native_partial_exit(self, position, rate, min_cost=1.0):
+        # Only market data, wallet availability and order submission are isolated.
+        exchange = SimpleNamespace(
+            markets={
+                PAIR: {
+                    "limits": {
+                        "cost": {"min": min_cost, "max": None},
+                        "amount": {"min": None, "max": None},
+                    }
+                }
+            },
+            _config={},
+            _contracts_to_amount=lambda pair, amount: amount,
+            _get_max_notional_from_tiers=lambda pair, leverage: None,
+            get_rates=lambda *args: (rate, rate),
+            amount_to_contract_precision=lambda pair, amount: amount_to_contract_precision(
+                amount, position.amount_precision, position.precision_mode, position.contract_size
+            ),
+        )
+        for name in (
+            "_get_stake_amount_limit",
+            "_get_stake_amount_considering_leverage",
+            "get_min_pair_stake_amount",
+            "get_max_pair_stake_amount",
+        ):
+            setattr(exchange, name, MethodType(getattr(Exchange, name), exchange))
+        self.model.dp._exchange = exchange
+        bot = object.__new__(FreqtradeBot)
+        bot.strategy = self.model
+        bot.exchange = exchange
+        bot.wallets = SimpleNamespace(get_available_stake_amount=lambda: 1000.0)
+        fills = []
+
+        def fill(trade, price, *, sub_trade_amt, exit_tag, **kwargs):
+            fills.append(sub_trade_amt)
+            trade.orders.append(self._filled_order(trade, sub_trade_amt, price, exit_tag))
+            trade.recalc_trade_from_orders()
+
+        bot.execute_trade_exit = fill
+        bot.check_and_call_adjust_trade_position(position)
+        return fills
+
+    def test_native_fills_release_equal_lots_and_leave_one_share_for_the_final_exit(self):
+        original_model = self.model
+        self.addCleanup(setattr, self, "model", original_model)
+        for stage_count in (2, 3, 4, 5):
+            with mock.patch.object(
+                QuickAdapterV3, "exit_stages", dict.fromkeys(range(stage_count), "lime")
+            ):
+                self.model = QuickAdapterV3(original_model.config)
+                self.model.freqai_info = original_model.config["freqai"]
+                self.model.bot_start()
+                self.model.dp = original_model.dp
+                for leverage in (1.0, 2.0, 5.0):
+                    for short in (False, True):
+                        with self.subTest(stage_count=stage_count, leverage=leverage, short=short):
+                            position = self._filled_position(
+                                short, leverage, amount=0.5 * stage_count
+                            )
+                            initial_stake = position.stake_amount
+                            for stage in range(stage_count - 1):
+                                target = self.model.get_take_profit_target(
+                                    self.frame, position, stage
+                                )[0]
+                                rate = target + (-1.0 if short else 1.0)
+                                before = position.stake_amount
+                                self.assertEqual(self._native_partial_exit(position, rate), [0.5])
+                                self.assertAlmostEqual(
+                                    before - position.stake_amount, initial_stake / stage_count
+                                )
+                            self.assertEqual(position.amount, 0.5)
+                            self.assertAlmostEqual(
+                                position.stake_amount, initial_stake / stage_count
+                            )
+                            self.assertEqual(self._native_partial_exit(position, rate), [])
+
+    def test_native_minimum_does_not_turn_a_representable_share_into_a_full_close(self):
+        for leverage in (1.0, 2.0, 5.0):
+            with self.subTest(leverage=leverage):
+                position = self._filled_position(leverage=leverage)
+                self.assertEqual(self._native_partial_exit(position, 135.74), [0.5])
+                # 64 with the native 5% reserve needs 67.2 quote; 0.50 meets it, 0.49 does not.
+                self.assertEqual(self._native_partial_exit(position, 135.74, min_cost=64.0), [0.5])
+                self.assertEqual(position.amount, 1.0)
+
+    def test_native_minimum_can_still_clamp_a_share_to_preserve_the_remainder(self):
+        position = self._filled_position()
+        for _ in range(2):
+            self.assertEqual(self._native_partial_exit(position, 135.74), [0.5])
+        self.assertEqual(self._native_partial_exit(position, 150.0, min_cost=73.1 / 1.05), [0.49])
+        exchange = self.model.dp._exchange
+        exit_min = exchange.get_min_pair_stake_amount(PAIR, 150.0, 0.0, position.leverage)
+        remaining_min = exchange.get_min_pair_stake_amount(
+            PAIR, 150.0, self.model.stoploss, position.leverage
+        ) * (1.0 + QuickAdapterV3._PARTIAL_EXIT_MIN_STAKE_MARGIN)
+        self.assertGreaterEqual(0.49 * 150.0, exit_min * position.leverage)
+        self.assertGreaterEqual(position.amount * 150.0, remaining_min * position.leverage)
+
+    def test_native_stake_conversion_keeps_a_lot_with_a_sub_decimal_quantum_stake(self):
+        position = self._filled_position(leverage=10.0, amount=0.02, open_rate=1e-16, lot=0.001)
+        self.assertEqual(self._native_partial_exit(position, 1.0, min_cost=0.0), [0.005])
+        self.assertEqual(position.amount, 0.015)
+
+    def test_native_quantity_ceiling_preserves_a_representable_fractional_contract(self):
+        with mock.patch.object(QuickAdapterV3, "exit_stages", {0: "lime", 1: "yellow"}):
+            position = self._filled_position(
+                leverage=1.0, amount=2.7e-18, open_rate=1e18, lot=1, contract_size=3e-19
+            )
+            self.assertEqual(self._native_partial_exit(position, 1e19, min_cost=0.0), [9e-19])
+            self.assertEqual(position.amount, 1.8e-18)
 
     def test_expired_models_exit_before_order_stage_and_date_guards(self):
         self.frame.loc[self.frame.index[-1], "date"] = pd.NaT
