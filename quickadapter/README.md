@@ -54,11 +54,18 @@ and installed dependency versions when comparing runs.
 4. Open trades use the custom volatility-based stoploss, which never loosens,
    including after partial exits. The strategy stoploss is -2.5%; leverage,
    execution and exchange conditions affect the actual outcome.
-5. Three take-profit stages request 40%, 30% and 20% of the stake remaining at
-   each stage. Exchange minimums can turn a partial request into a full close.
-   The final target arms a persisted trailing full exit: a material adverse
-   retracement exits, not elapsed stagnation alone. Open orders block new staged
-   adjustments.
+5. The exit ladder targets equal shares of the initial stake: nominally 1/N
+   per rung, or 25% with the four default stages. Partial rungs request
+   `1 / (N - k)` of the remaining stake at zero-based stage `k`; the final
+   exit closes the remainder. Adding or removing a rung in `exit_stages`
+   changes the nominal shares. Exchange lot precision, minimum-stake limits
+   and canceled partially filled orders can change the realized shares;
+   minimums can reduce a partial request or turn it into a full close.
+   An executable partial lot is preserved through stake conversion; if no
+   callback stake reproduces the selected lot, the strategy requests a full close.
+   The last rung's target arms a persisted trailing full exit: a material
+   adverse retracement exits, not elapsed stagnation alone. Open orders
+   block new staged adjustments.
 6. Model expiration (`do_predict=2`) requests an exit. A valid opposite extrema
    signal requests an exit only after price-reversal confirmation. Outlier
    predictions are counted per candle; that count is not itself an unconditional
@@ -201,11 +208,11 @@ and the [FreqAI parameter reference][freqai-parameters].
 
 ### Exit pricing
 
-| Path                                                           | Runtime fallback       | Type / Range                                                        | Description                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| -------------------------------------------------------------- | ---------------------- | ------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| exit_pricing.trade_natr_method                                 | `moving_average`       | enum {`moving_average`,`quantile_interpolation`,`weighted_average`} | Trade NATR (Normalized Average True Range) aggregation for stoploss and take-profit distances. `moving_average` uses KAMA to preserve nonnegative volatility. The stoploss never loosens, including after partial exits, and remains unchanged on order fills.                                                                                                                                                              |
-| exit_pricing.final_take_profit_retracement_fraction            | 0.5                    | float (0,1]                                                         | Fraction of the final take-profit target distance used as the frozen trailing retracement distance after the final target arms the exit. The final exit tracks the best subsequent per-candle rate and exits only after this material adverse move; elapsed stagnation alone does not exit. Plot annotations show only the current trail boundary from the candle that established it; earlier boundaries are not retained. |
-| exit_pricing.take_profit_stage_natr_multiplier_fraction_series | `fibonacci_extensions` | enum {`fibonacci_extensions`,`pi_extensions`}                       | Partial target distances from entry, as percentages of the full target distance: approximately 23.6%, 38.2% and 61.8% for `fibonacci_extensions`, or 3.2%, 10.1% and 31.8% for `pi_extensions`. Pi places partial targets closer to entry. Stake reduction percentages and the final target are unchanged. Invalid values use the default.                                                                                  |
+| Path                                                           | Runtime fallback       | Type / Range                                                        | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| -------------------------------------------------------------- | ---------------------- | ------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| exit_pricing.trade_natr_method                                 | `moving_average`       | enum {`moving_average`,`quantile_interpolation`,`weighted_average`} | Trade NATR (Normalized Average True Range) aggregation for stoploss and take-profit distances. `moving_average` uses KAMA to preserve nonnegative volatility. The stoploss never loosens, including after partial exits, and remains unchanged on order fills.                                                                                                                                                                                                                                                               |
+| exit_pricing.final_take_profit_retracement_fraction            | 0.5                    | float (0,1]                                                         | Fraction of the final take-profit target distance used as the frozen trailing retracement distance after the final target arms the exit. The final exit tracks the best subsequent per-candle rate and exits only after this material adverse move; elapsed stagnation alone does not exit. Plot annotations show only the current trail boundary from the candle that established it; earlier boundaries are not retained.                                                                                                  |
+| exit_pricing.take_profit_stage_natr_multiplier_fraction_series | `fibonacci_extensions` | enum {`fibonacci_extensions`,`pi_extensions`}                       | With the default four rungs, partial target distances are approximately 23.6%, 38.2% and 61.8% of the full target distance for `fibonacci_extensions`, or 3.2%, 10.1% and 31.8% for `pi_extensions`. Pi places partial targets closer to entry. Partial fractions are recomputed when the rung count changes; the final rung always uses the full distance. This setting changes target distances only, not nominal stake shares; execution constraints are described in the decision cycle. Invalid values use the default. |
 
 ### Reversal confirmation
 

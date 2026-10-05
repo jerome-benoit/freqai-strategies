@@ -1053,8 +1053,8 @@ TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_SERIES: Final[
 # These fractions place partial targets inside the full take-profit distance;
 # they do not extend it. Fibonacci uses integer powers of phi; pi uses integer
 # powers of pi as a custom geometric construction, not a trading convention.
-# The final fraction ``1.0`` is the separate ``_FINAL_EXIT_STAGE_PARAMS``
-# literal.
+# The strategy appends the final fraction ``1.0`` to the generated
+# partial-target distance ladder.
 _TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_BASES: Final[dict[str, float]] = {
     "fibonacci_extensions": (1.0 + math.sqrt(5.0)) / 2.0,
     "pi_extensions": math.pi,
@@ -1103,6 +1103,21 @@ def get_take_profit_stage_natr_multiplier_fractions(
             "NATR multiplier fractions must be > 0 (underflow to zero)"
         )
     return fractions
+
+
+@lru_cache(maxsize=_CACHE_MAXSIZE_SMALL)
+def get_exit_stage_stake_fractions(stage_count: int) -> tuple[float, ...]:
+    """Return each exit's share of the stake still open at that stage.
+
+    A position split across ``stage_count`` exits releases ``1 / stage_count``
+    of its initial stake at each one. The stake remaining before stage ``k`` is
+    ``(stage_count - k) / stage_count`` of the initial one, so releasing
+    ``1 / (stage_count - k)`` of it closes exactly one share. The last stage
+    takes the whole remainder.
+    """
+    if stage_count <= 0:
+        raise ValueError(f"Invalid stage_count value {stage_count!r}: must be >= 1")
+    return tuple(1.0 / (stage_count - stage) for stage in range(stage_count))
 
 
 SPARSE_TRAINING_MASS_THRESHOLD: Final[float] = 0.05
