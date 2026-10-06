@@ -23,10 +23,7 @@ from Utils import (
     normalize_fit_live_predictions_config,
 )
 
-CANONICAL_EXIT_PRICING: dict[str, Any] = {
-    "trade_natr_method": "moving_average",
-    "final_take_profit_retracement_fraction": 0.25,
-}
+CANONICAL_EXIT_PRICING: dict[str, Any] = copy.deepcopy(DEFAULTS_EXIT_PRICING)
 CANONICAL_PROTECTIONS: dict[str, Any] = {
     "trade_duration_candles": 72,
     "lookback_period_fraction": 0.5,
@@ -111,6 +108,29 @@ class UtilsConfigResolutionTest(QaTestCase):
                 self.assertEqual(method, resolved["trade_natr_method"])
                 self.assertEqual([], sink)
 
+    def test_exit_pricing_unknown_fraction_series_falls_back_with_a_warning(self) -> None:
+        with (
+            recorded_warnings() as (logger, _),
+            self.assertLogs(logger, level=logging.WARNING) as captured,
+        ):
+            resolved = get_exit_pricing_config(
+                {"take_profit_stage_natr_multiplier_fraction_series": "nope"}, logger
+            )
+        self.assertEqual(CANONICAL_EXIT_PRICING, resolved)
+        self.assertEqual([logging.WARNING], [record.levelno for record in captured.records])
+
+    def test_exit_pricing_every_supported_fraction_series_is_preserved(self) -> None:
+        for series in ("fibonacci_extensions", "pi_extensions"):
+            with self.subTest(series=series):
+                with recorded_warnings() as (logger, sink):
+                    resolved = get_exit_pricing_config(
+                        {"take_profit_stage_natr_multiplier_fraction_series": series}, logger
+                    )
+                self.assertEqual(
+                    series, resolved["take_profit_stage_natr_multiplier_fraction_series"]
+                )
+                self.assertEqual([], sink)
+
     def test_exit_pricing_retracement_fraction_range_is_half_open_at_zero(self) -> None:
         with recorded_warnings() as (logger, sink):
             self.assertEqual(
@@ -123,18 +143,18 @@ class UtilsConfigResolutionTest(QaTestCase):
 
         for rejected in (0, 0.0, -0.5, None, True, "0.25"):
             with self.subTest(rejected=rejected):
-                with recorded_warnings() as (logger, sink):
+                with (
+                    recorded_warnings() as (logger, _),
+                    self.assertLogs(logger, level=logging.WARNING) as captured,
+                ):
                     resolved = get_exit_pricing_config(
                         {"final_take_profit_retracement_fraction": rejected}, logger
                     )
-                self.assertEqual(0.25, resolved["final_take_profit_retracement_fraction"])
                 self.assertEqual(
-                    [
-                        f"Invalid exit_pricing final_take_profit_retracement_fraction value "
-                        f"{rejected!r}: must be a finite number > 0 <= 1, using default 0.25"
-                    ],
-                    sink,
+                    DEFAULTS_EXIT_PRICING["final_take_profit_retracement_fraction"],
+                    resolved["final_take_profit_retracement_fraction"],
                 )
+                self.assertEqual([logging.WARNING], [record.levelno for record in captured.records])
 
     def test_exit_pricing_returns_a_fresh_dict_each_call(self) -> None:
         with recorded_warnings() as (logger, sink):

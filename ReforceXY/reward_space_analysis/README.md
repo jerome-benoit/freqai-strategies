@@ -475,14 +475,14 @@ where `kernel_function` depends on `exit_attenuation_mode`. See
 
 #### Duration Penalties
 
-| Parameter                    | Default | Description                                                                               |
-| ---------------------------- | ------- | ----------------------------------------------------------------------------------------- |
-| `max_trade_duration_candles` | 128     | Trade duration cap                                                                        |
+| Parameter                    | Default | Description                                                                                 |
+| ---------------------------- | ------- | ------------------------------------------------------------------------------------------- |
+| `max_trade_duration_candles` | 128     | Trade duration cap                                                                          |
 | `max_idle_duration_candles`  | None    | Idle hazard threshold; missing/None derives 4× trade cap; idle clock keeps counting past it |
-| `idle_penalty_ratio`         | 1.0     | Idle penalty ratio                                                                        |
-| `idle_penalty_power`         | 1.025   | Idle penalty exponent                                                                     |
-| `hold_penalty_ratio`         | 1.0     | Hold penalty ratio                                                                        |
-| `hold_penalty_power`         | 1.025   | Hold penalty exponent                                                                     |
+| `idle_penalty_ratio`         | 1.0     | Idle penalty ratio                                                                          |
+| `idle_penalty_power`         | 1.025   | Idle penalty exponent                                                                       |
+| `hold_penalty_ratio`         | 1.0     | Hold penalty ratio                                                                          |
+| `hold_penalty_power`         | 1.025   | Hold penalty exponent                                                                       |
 
 An explicit zero threshold uses denominator 1 and does not disable the idle
 penalty.

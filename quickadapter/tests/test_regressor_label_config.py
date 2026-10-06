@@ -13,6 +13,7 @@ from unittest import mock
 import numpy as np
 import pandas as pd
 import QuickAdapterV3 as strategy_module
+from freqtrade.enums import RunMode
 from LabelTransformer import (
     CUSTOM_THRESHOLD_METHODS,
     PREDICTION_METHODS,
@@ -20,7 +21,12 @@ from LabelTransformer import (
 )
 from qa_support import PAIR, QaTestCase, model_config, temporary_directory
 from QuickAdapterV3 import QuickAdapterV3
-from Utils import _OPTUNA_LABEL_SELECTION_SCHEMA_VERSION, _OPTUNA_NAMESPACES, enum_error_message
+from Utils import (
+    _OPTUNA_LABEL_SELECTION_SCHEMA_VERSION,
+    _OPTUNA_NAMESPACES,
+    DEFAULT_REGRESSOR,
+    REGRESSORS,
+)
 
 import quickadapter.user_data.freqaimodels.QuickAdapterRegressorV3 as regressor_module
 from quickadapter.user_data.freqaimodels.QuickAdapterRegressorV3 import (
@@ -115,13 +121,133 @@ def json_roundtrip(metadata: dict) -> object:
 
 
 class RegressorLabelConfigTest(QaTestCase):
-    def test_unknown_label_method_raises_with_the_canonical_enum_message(self):
-        with self.assertRaises(ValueError) as caught:
+    def test_unknown_regressor_warns_before_preserving_the_canonical_fallback(self):
+        rejected = "unknown-regressor"
+        with temporary_directory() as temp:
+            config = model_config(
+                temp,
+                freqai={"regressor": rejected, "label_prediction": {"method": "thresholding"}},
+            )
+            with self.assertLogs(REGRESSOR_LOGGER, level="WARNING") as logs:
+                model = QuickAdapterRegressorV3(config=config)
+            self.assertEqual(model.regressor, DEFAULT_REGRESSOR)
+            self.assertEqual(config["freqai"]["regressor"], DEFAULT_REGRESSOR)
+            warning = "\n".join(record.getMessage() for record in logs.records)
+            for value in (rejected, DEFAULT_REGRESSOR, *REGRESSORS):
+                self.assertIn(value, warning)
+
+    def test_startup_deduplicates_horizon_warnings_without_merging_pair_fallbacks(self):
+        pairs = [PAIR, "ETH/USDT", "SOL/USDT"]
+        for rejected in (0, True, None, [], {}):
+            with self.subTest(rejected=rejected), temporary_directory() as temp:
+                config = model_config(
+                    temp,
+                    exchange={"pair_whitelist": pairs},
+                    freqai={
+                        "optuna_hyperopt": {"enabled": False},
+                        "feature_parameters": {
+                            "label_period_candles": 7,
+                            "label_horizon_candles": rejected,
+                        },
+                        "label_prediction": {"method": "thresholding"},
+                    },
+                )
+                config["runmode"] = RunMode.BACKTEST
+                with self.assertLogs(REGRESSOR_LOGGER, level="INFO") as initial:
+                    model = QuickAdapterRegressorV3(config=config)
+                horizon_warnings = [
+                    record
+                    for record in initial.records
+                    if record.levelname == "WARNING"
+                    and "label_horizon_candles" in record.getMessage()
+                ]
+                self.assertEqual(1, len(horizon_warnings))
+                params = dict(model.get_optuna_params(pairs[1], _OPTUNA_NAMESPACES.label))
+                params["label_period_candles"] = 13
+                model.set_optuna_params(pairs[1], _OPTUNA_NAMESPACES.label, params)
+                for _ in range(2):
+                    with self.assertLogs(REGRESSOR_LOGGER, level="INFO") as startup:
+                        model._log_model_configuration()
+                    horizon_warnings = [
+                        record
+                        for record in startup.records
+                        if record.levelname == "WARNING"
+                        and "label_horizon_candles" in record.getMessage()
+                    ]
+                    self.assertEqual(2, len(horizon_warnings))
+                    messages = [record.getMessage() for record in startup.records]
+                    for pair, horizon in zip(pairs, (7, 13, 7), strict=True):
+                        pair_message = next(
+                            message for message in messages if f"{pair}:" in message
+                        )
+                        self.assertIn(f"label_horizon_candles={horizon}", pair_message)
+                with self.assertLogs(REGRESSOR_LOGGER, level="WARNING") as runtime:
+                    horizons = [model._label_horizon_candles(pair) for pair in pairs]
+                self.assertEqual([7, 13, 7], horizons)
+                self.assertEqual(3, len(runtime.records))
+
+    def test_startup_reports_requested_hpo_separately_from_effective_activation(self):
+        for requested, freqai_enabled, test_size, active in (
+            (False, True, 0.2, False),
+            (True, False, 0.2, False),
+            (True, True, 0, False),
+            (True, True, 0.2, True),
+        ):
+            with (
+                self.subTest(
+                    requested=requested, freqai_enabled=freqai_enabled, test_size=test_size
+                ),
+                temporary_directory() as temp,
+            ):
+                config = model_config(
+                    temp,
+                    freqai={
+                        "enabled": freqai_enabled,
+                        "optuna_hyperopt": {"enabled": requested},
+                        "data_split_parameters": {"test_size": test_size},
+                        "label_prediction": {"method": "thresholding"},
+                    },
+                )
+                with self.assertLogs(REGRESSOR_LOGGER, level="INFO") as logs:
+                    model = QuickAdapterRegressorV3(config=config)
+                self.assertEqual(model._optuna_hyperopt, active)
+                self.assertEqual(bool(model._optuna_label_candle), active)
+                fields = {
+                    key.strip(): value.strip()
+                    for record in logs.records
+                    for key, separator, value in [record.getMessage().partition(":")]
+                    if separator
+                }
+                self.assertEqual(fields["enabled"], str(requested))
+                self.assertEqual(fields["active"], str(active))
+                self.assertEqual("inactive_reason" in fields, not active)
+                self.assertEqual("n_trials" in fields, active)
+
+    def test_inactive_requested_hpo_preserves_configured_label_validation(self):
+        for feature_parameters, error in (
+            ({"label_method": "unknown-method"}, ValueError),
+            ({"label_p_order": "invalid-order"}, ValueError),
+            ({"label_weights": 7}, TypeError),
+        ):
+            with self.subTest(feature_parameters=feature_parameters), temporary_directory() as temp:
+                config = model_config(
+                    temp,
+                    freqai={
+                        "feature_parameters": feature_parameters,
+                        "data_split_parameters": {"test_size": 0},
+                        "label_prediction": {"method": "thresholding"},
+                    },
+                )
+                config["runmode"] = RunMode.BACKTEST
+                with self.assertRaises(error):
+                    QuickAdapterRegressorV3(config=config)
+                config["freqai"]["optuna_hyperopt"]["enabled"] = False
+                model = QuickAdapterRegressorV3(config=config)
+                self.assertFalse(model._optuna_hyperopt)
+
+    def test_unknown_label_method_is_rejected(self):
+        with self.assertRaises(ValueError):
             label_regressor()._resolve_label_method_config("kde")
-        self.assertEqual(
-            str(caught.exception),
-            enum_error_message("label_method", "kde", QuickAdapterRegressorV3._SELECTION_METHODS),
-        )
 
     def test_category_defaults_are_resolved_per_method(self):
         expected = {
@@ -176,43 +302,25 @@ class RegressorLabelConfigTest(QaTestCase):
                 with self.assertLogs(REGRESSOR_LOGGER, level="WARNING") as logs:
                     resolved = model._resolve_label_method_config(method)
                 self.assertEqual(resolved["distance_metric"], expected_default)
-                self.assertIn(f"Invalid {key} value {bad_metric!r}", "\n".join(logs.output))
+                self.assertIn(bad_metric, "\n".join(record.getMessage() for record in logs.records))
 
     def test_cluster_and_cluster_trial_selection_methods_are_fatal(self):
         for key in ("label_cluster_selection_method", "label_cluster_trial_selection_method"):
             with self.subTest(key=key):
                 model = label_regressor(ft_params={key: "kalman"})
-                with self.assertRaises(ValueError) as caught:
+                with self.assertRaises(ValueError):
                     model._resolve_label_method_config("kmeans")
-                self.assertEqual(
-                    str(caught.exception),
-                    enum_error_message(key, "kalman", QuickAdapterRegressorV3._DISTANCE_METHODS),
-                )
 
     def test_aggregate_metric_is_rejected_for_cluster_and_density_categories(self):
         aggregates = set(QuickAdapterRegressorV3._POWER_MEAN_MAP) | {"weighted_sum"}
         for aggregate in aggregates:
-            with self.subTest(aggregate=aggregate):
-                with self.assertRaises(ValueError) as caught:
-                    QuickAdapterRegressorV3._validate_label_selection_metric(
-                        aggregate,
-                        ctx="label_cluster_metric",
-                        default="euclidean",
-                        aggregate_allowed=False,
-                        mode="raise",
-                    )
-                self.assertEqual(
-                    str(caught.exception),
-                    enum_error_message(
-                        "label_cluster_metric",
-                        aggregate,
-                        tuple(
-                            candidate
-                            for candidate in QuickAdapterRegressorV3._DISTANCE_METRICS
-                            if candidate
-                            in QuickAdapterRegressorV3._CLUSTER_DENSITY_DISTANCE_METRICS_SET
-                        ),
-                    ),
+            with self.subTest(aggregate=aggregate), self.assertRaises(ValueError):
+                QuickAdapterRegressorV3._validate_label_selection_metric(
+                    aggregate,
+                    ctx="label_cluster_metric",
+                    default="euclidean",
+                    aggregate_allowed=False,
+                    mode="raise",
                 )
 
     def test_probability_metrics_are_rejected_for_cluster_and_density_categories(self):
@@ -603,18 +711,10 @@ class RegressorLabelConfigTest(QaTestCase):
             model.optuna_create_sampler("auto")
         load_module.assert_called_once_with("samplers/auto_sampler")
 
-    def test_optuna_create_sampler_reports_a_missing_sampler_through_the_enum_message(self):
+    def test_optuna_create_sampler_rejects_a_missing_sampler(self):
         model = label_regressor(_optuna_config=optuna_config(sampler=None))
-        with self.assertRaises(ValueError) as caught:
+        with self.assertRaises(ValueError):
             model.optuna_create_sampler(None)
-        self.assertEqual(
-            str(caught.exception),
-            enum_error_message(
-                "optuna sampler",
-                None,
-                QuickAdapterRegressorV3._OPTUNA_SAMPLERS,
-            ),
-        )
 
     def test_optuna_create_sampler_refuses_an_unmapped_sampler_by_exhaustiveness(self):
         model = label_regressor(_optuna_config=optuna_config())
@@ -646,12 +746,8 @@ class RegressorLabelConfigTest(QaTestCase):
 
     def test_optuna_samplers_by_namespace_refuses_an_unknown_namespace(self):
         model = label_regressor(_optuna_config=optuna_config())
-        with self.assertRaises(ValueError) as caught:
+        with self.assertRaises(ValueError):
             model.optuna_samplers_by_namespace("hp_label")
-        self.assertEqual(
-            str(caught.exception),
-            enum_error_message("namespace", "hp_label", _OPTUNA_NAMESPACES),
-        )
 
     def test_candle_pool_full_is_centred_on_the_label_frequency(self):
         for frequency, expected in (

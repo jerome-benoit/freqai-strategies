@@ -27,6 +27,7 @@ from freqtrade.strategy.interface import IStrategy
 from freqtrade.util import FtPrecise
 from LabelTransformer import (
     COMBINED_AGGREGATIONS,
+    FILL_BANDWIDTHS,
     FILL_METHODS,
     SMOOTHING_METHOD_MODES,
     SMOOTHING_METHODS,
@@ -69,6 +70,7 @@ from Utils import (
     get_custom_protections_config,
     get_distance,
     get_exit_pricing_config,
+    get_exit_stage_stake_fractions,
     get_fit_live_predictions_candles,
     get_label_defaults,
     get_label_horizon_candles,
@@ -77,6 +79,7 @@ from Utils import (
     get_ma_fn,
     get_reversal_confirmation_config,
     get_smoothing_kernel_half_width,
+    get_take_profit_stage_natr_multiplier_fractions,
     is_finite_number,
     label_known_at_lookahead_column_name,
     label_weight_column_name,
@@ -218,7 +221,7 @@ class QuickAdapterV3(IStrategy):
     _ANNOTATION_LINE_OFFSET_CANDLES: Final[int] = 10
 
     def version(self) -> str:
-        return "3.13.0-rc.12"
+        return "3.13.0-rc.15"
 
     timeframe = "5m"
     timeframe_minutes = timeframe_to_minutes(timeframe)
@@ -228,22 +231,21 @@ class QuickAdapterV3(IStrategy):
 
     position_adjustment_enable = True
 
-    # {stage: (natr_multiplier_fraction, stake_percent, color)}
-    partial_exit_stages: ClassVar[dict[int, tuple[float, float, str]]] = {
-        0: (0.4858, 0.4, "lime"),
-        1: (0.6180, 0.3, "yellow"),
-        2: (0.7640, 0.2, "coral"),
+    # {stage: color} for the whole exit ladder, the final full exit included.
+    # The entry count is the single source of truth for the ladder: distances,
+    # stake shares and the final rung all derive from it. Adding or removing a
+    # rung is the only edit needed.
+    exit_stages: ClassVar[dict[int, str]] = {
+        0: "lime",
+        1: "yellow",
+        2: "coral",
+        3: "deepskyblue",
     }
 
-    # (natr_multiplier_fraction, stake_percent, color)
-    _FINAL_EXIT_STAGE_PARAMS: Final[tuple[float, float, str]] = (
-        1.0,
-        1.0,
-        "deepskyblue",
-    )
-
-    # Final full-exit stage, derived from the configured partial exits.
-    _FINAL_EXIT_STAGE: Final[int] = max(partial_exit_stages.keys(), default=-1) + 1
+    # ``get_trade_exit_stage`` derives a stage from the number of filled take-profit
+    # exits, so every stage it can reach must exist here. A gap would price a
+    # missing stage at the final rung instead of arming it.
+    assert sorted(exit_stages) == list(range(len(exit_stages)))
 
     _TAKE_PROFIT_ORDER_TAG_PREFIX: Final[str] = "take_profit_"
     _FINAL_TAKE_PROFIT_STATE_KEY: Final[str] = "final_take_profit_state"
@@ -436,6 +438,56 @@ class QuickAdapterV3(IStrategy):
     def final_take_profit_retracement_fraction(self) -> float:
         return float(self.exit_pricing["final_take_profit_retracement_fraction"])
 
+    @property
+    def take_profit_stage_natr_multiplier_fraction_series(self) -> str:
+        return str(self.exit_pricing["take_profit_stage_natr_multiplier_fraction_series"])
+
+    @cached_property
+    def exit_stage_natr_multiplier_fractions(self) -> dict[int, float]:
+        """Target distance of each stage as a fraction of the full distance.
+
+        Partial rungs follow the configured reciprocal-extension series; the
+        final rung sits at the full distance.
+        """
+        partial_stages = QuickAdapterV3.partial_exit_stages()
+        fractions = get_take_profit_stage_natr_multiplier_fractions(
+            self.take_profit_stage_natr_multiplier_fraction_series,
+            len(partial_stages),
+        )
+        ladder = dict(zip(partial_stages, fractions, strict=True))
+        ladder[QuickAdapterV3.final_exit_stage()] = 1.0
+        return ladder
+
+    @cached_property
+    def exit_stage_stake_fractions(self) -> dict[int, float]:
+        """Nominal share of the stake still open that each stage requests.
+
+        With ``n`` stages, stage ``k`` requests ``1 / (n - k)`` of the remaining
+        stake: nominally ``1 / n`` of the initial stake with complete fills and
+        no exchange sizing adjustments. The last stage closes the remainder.
+        """
+        fractions = get_exit_stage_stake_fractions(len(QuickAdapterV3.exit_stages))
+        return dict(zip(sorted(QuickAdapterV3.exit_stages), fractions, strict=True))
+
+    def get_exit_stage_natr_multiplier_fraction(self, exit_stage: int) -> float:
+        """Return the stage's distance fraction, or the full distance if unknown."""
+        return self.exit_stage_natr_multiplier_fractions.get(exit_stage, 1.0)
+
+    @staticmethod
+    def partial_exit_stages() -> tuple[int, ...]:
+        """Every rung but the last, which closes the remainder."""
+        return tuple(sorted(QuickAdapterV3.exit_stages)[:-1])
+
+    @staticmethod
+    def final_exit_stage() -> int:
+        """The last rung, which closes whatever the earlier ones left."""
+        return max(QuickAdapterV3.exit_stages)
+
+    @staticmethod
+    def is_partial_exit_stage(exit_stage: int) -> bool:
+        """Whether ``exit_stage`` releases one slice rather than the remainder."""
+        return exit_stage in QuickAdapterV3.partial_exit_stages()
+
     @cached_property
     def reversal_confirmation(self) -> dict[str, int | float]:
         return get_reversal_confirmation_config(self.config.get("reversal_confirmation"), logger)
@@ -511,12 +563,18 @@ class QuickAdapterV3(IStrategy):
         self._log_strategy_configuration()
 
     def _log_strategy_configuration(self) -> None:
+        label_weighting = self.label_weighting
+        label_smoothing = self.label_smoothing
+        reversal_confirmation = self.reversal_confirmation
+        trade_natr_method = self.trade_natr_method
+        final_take_profit_retracement_fraction = self.final_take_profit_retracement_fraction
+        fraction_series = self.take_profit_stage_natr_multiplier_fraction_series
+        protections = self.protections
+
         logger.info("=" * 60)
         logger.info("QuickAdapter Strategy Configuration")
         logger.info("=" * 60)
 
-        label_weighting = self.label_weighting
-        label_smoothing = self.label_smoothing
         for label_col in LABEL_COLUMNS:
             logger.info(f"Label [{label_col}]:")
 
@@ -525,62 +583,72 @@ class QuickAdapterV3(IStrategy):
             )
             logger.info("  Weighting:")
             logger.info(f"    strategy: {col_weighting['strategy']}")
-            logger.info(
-                f"    metric_coefficients: {format_dict(col_weighting['metric_coefficients'], style=_FORMAT_STYLE_DICT)}"
-            )
-            logger.info(f"    aggregation: {col_weighting['aggregation']}")
-            if col_weighting["aggregation"] == COMBINED_AGGREGATIONS[5]:  # "softmax"
+            if col_weighting["strategy"] != QuickAdapterV3._WEIGHT_NONE:
+                if col_weighting["strategy"] == WEIGHT_STRATEGIES[8]:  # "combined"
+                    logger.info(
+                        f"    metric_coefficients: {format_dict(col_weighting['metric_coefficients'], style=_FORMAT_STYLE_DICT)}"
+                    )
+                    logger.info(f"    aggregation: {col_weighting['aggregation']}")
+                    if col_weighting["aggregation"] == COMBINED_AGGREGATIONS[5]:  # "softmax"
+                        logger.info(
+                            f"    softmax_temperature: {format_number(col_weighting['softmax_temperature'])}"
+                        )
+                fill_method = col_weighting["fill_method"]
+                logger.info(f"    fill_method: {fill_method}")
+                if fill_method in (
+                    QuickAdapterV3._FILL_EPSILON,
+                    QuickAdapterV3._FILL_EPSILON_GAUSSIAN,
+                ):
+                    logger.info(f"    fill_epsilon: {format_number(col_weighting['fill_epsilon'])}")
+                    logger.info(
+                        f"    fill_epsilon_baseline: {col_weighting['fill_epsilon_baseline']}"
+                    )
+                if fill_method in (
+                    QuickAdapterV3._FILL_GAUSSIAN,
+                    QuickAdapterV3._FILL_EPSILON_GAUSSIAN,
+                ):
+                    logger.info(
+                        f"    fill_sigma_candles: {format_number(col_weighting['fill_sigma_candles'])}"
+                    )
+                    logger.info(f"    fill_bandwidth: {col_weighting['fill_bandwidth']}")
+                    if col_weighting["fill_bandwidth"] == FILL_BANDWIDTHS[1]:  # "knn"
+                        logger.info(
+                            f"    fill_sigma_min_candles: {format_number(col_weighting['fill_sigma_min_candles'])}"
+                        )
+                        logger.info(
+                            f"    fill_bandwidth_neighbors: {col_weighting['fill_bandwidth_neighbors']}"
+                        )
+                        logger.info(
+                            f"    fill_bandwidth_alpha: {format_number(col_weighting['fill_bandwidth_alpha'])}"
+                        )
+                logger.info(f"    support_policy: {col_weighting['support_policy']}")
                 logger.info(
-                    f"    softmax_temperature: {format_number(col_weighting['softmax_temperature'])}"
-                )
-            fill_method = col_weighting["fill_method"]
-            logger.info(f"    fill_method: {fill_method}")
-            if fill_method in (
-                QuickAdapterV3._FILL_EPSILON,
-                QuickAdapterV3._FILL_EPSILON_GAUSSIAN,
-            ):
-                logger.info(f"    fill_epsilon: {format_number(col_weighting['fill_epsilon'])}")
-                logger.info(f"    fill_epsilon_baseline: {col_weighting['fill_epsilon_baseline']}")
-            if fill_method in (
-                QuickAdapterV3._FILL_GAUSSIAN,
-                QuickAdapterV3._FILL_EPSILON_GAUSSIAN,
-            ):
-                logger.info(
-                    f"    fill_sigma_candles: {format_number(col_weighting['fill_sigma_candles'])}"
+                    f"    min_pivot_equivalent_count: {col_weighting['min_pivot_equivalent_count']}"
                 )
                 logger.info(
-                    f"    fill_sigma_min_candles: {format_number(col_weighting['fill_sigma_min_candles'])}"
-                )
-                logger.info(f"    fill_bandwidth: {col_weighting['fill_bandwidth']}")
-                logger.info(
-                    f"    fill_bandwidth_neighbors: {col_weighting['fill_bandwidth_neighbors']}"
+                    f"    min_positive_label_weight_fraction: {format_number(col_weighting['min_positive_label_weight_fraction'])}"
                 )
                 logger.info(
-                    f"    fill_bandwidth_alpha: {format_number(col_weighting['fill_bandwidth_alpha'])}"
+                    f"    min_effective_sample_size: {format_number(col_weighting['min_effective_sample_size'])}"
                 )
-            logger.info(f"    support_policy: {col_weighting['support_policy']}")
-            logger.info(
-                f"    min_pivot_equivalent_count: {col_weighting['min_pivot_equivalent_count']}"
-            )
-            logger.info(
-                f"    min_positive_label_weight_fraction: {format_number(col_weighting['min_positive_label_weight_fraction'])}"
-            )
-            logger.info(
-                f"    min_effective_sample_size: {format_number(col_weighting['min_effective_sample_size'])}"
-            )
 
             col_smoothing = get_label_column_config(
                 label_col, label_smoothing["default"], label_smoothing["columns"]
             )
             logger.info("  Smoothing:")
-            logger.info(f"    method: {col_smoothing['method']}")
-            logger.info(f"    window_candles: {col_smoothing['window_candles']}")
-            logger.info(f"    beta: {format_number(col_smoothing['beta'])}")
-            logger.info(f"    polyorder: {col_smoothing['polyorder']}")
-            logger.info(f"    mode: {col_smoothing['mode']}")
-            logger.info(f"    sigma: {format_number(col_smoothing['sigma'])}")
-
             method = col_smoothing["method"]
+            logger.info(f"    method: {method}")
+            if method != SMOOTHING_METHODS[0]:  # "none"
+                logger.info(f"    window_candles: {col_smoothing['window_candles']}")
+                if method in SMOOTHING_METHODS[2:4]:  # Kaiser families
+                    logger.info(f"    beta: {format_number(col_smoothing['beta'])}")
+                if method == QuickAdapterV3._SMOOTHING_SAVGOL:
+                    logger.info(f"    polyorder: {col_smoothing['polyorder']}")
+                if method in SMOOTHING_METHOD_MODES:
+                    logger.info(f"    mode: {col_smoothing['mode']}")
+                if method == SMOOTHING_METHODS[8]:  # "gaussian_filter1d"
+                    logger.info(f"    sigma: {format_number(col_smoothing['sigma'])}")
+
             if col_weighting["strategy"] != QuickAdapterV3._WEIGHT_NONE and (
                 method == QuickAdapterV3._SMOOTHING_SMM
                 or (method == QuickAdapterV3._SMOOTHING_SAVGOL and col_smoothing["polyorder"] >= 2)
@@ -599,47 +667,50 @@ class QuickAdapterV3(IStrategy):
 
         logger.info("Reversal Confirmation:")
         logger.info(
-            f"  lookback_period_candles: {self.reversal_confirmation['lookback_period_candles']}"
+            f"  lookback_period_candles: {reversal_confirmation['lookback_period_candles']}"
+        )
+        logger.info(f"  decay_fraction: {format_number(reversal_confirmation['decay_fraction'])}")
+        logger.info(
+            f"  min_natr_multiplier_fraction: {format_number(reversal_confirmation['min_natr_multiplier_fraction'])}"
         )
         logger.info(
-            f"  decay_fraction: {format_number(self.reversal_confirmation['decay_fraction'])}"
-        )
-        logger.info(
-            f"  min_natr_multiplier_fraction: {format_number(self.reversal_confirmation['min_natr_multiplier_fraction'])}"
-        )
-        logger.info(
-            f"  max_natr_multiplier_fraction: {format_number(self.reversal_confirmation['max_natr_multiplier_fraction'])}"
+            f"  max_natr_multiplier_fraction: {format_number(reversal_confirmation['max_natr_multiplier_fraction'])}"
         )
 
         logger.info("Exit Pricing:")
-        logger.info(f"  trade_natr_method: {self.trade_natr_method}")
+        logger.info(f"  trade_natr_method: {trade_natr_method}")
         logger.info(
             "  final_take_profit_retracement_fraction: "
-            f"{format_number(self.final_take_profit_retracement_fraction)}"
+            f"{format_number(final_take_profit_retracement_fraction)}"
         )
+        logger.info(f"  take_profit_stage_natr_multiplier_fraction_series: {fraction_series}")
 
         logger.info("Custom Stoploss:")
         logger.info(
             f"  natr_multiplier_fraction: {format_number(QuickAdapterV3._CUSTOM_STOPLOSS_NATR_MULTIPLIER_FRACTION)}"
         )
 
-        logger.info("Partial Take-Profit Stages:")
-        for stage, (
-            natr_multiplier_fraction,
-            stake_percent,
-            color,
-        ) in QuickAdapterV3.partial_exit_stages.items():
+        stage_count = len(QuickAdapterV3.exit_stages)
+        distance_fractions = self.exit_stage_natr_multiplier_fractions
+        stake_fractions = self.exit_stage_stake_fractions
+        logger.info(f"Exit Stages: {stage_count} nominally equal shares of the initial stake")
+        for stage in sorted(QuickAdapterV3.exit_stages):
             logger.info(
-                f"  stage {stage}: natr_multiplier_fraction={format_number(natr_multiplier_fraction)}, stake_percent={format_number(stake_percent)}, color={color}"
+                f"  stage {stage}: natr_multiplier_fraction="
+                f"{format_number(distance_fractions[stage])}, "
+                f"stake_fraction_of_remaining={format_number(stake_fractions[stage])}, "
+                f"stake_share_of_initial={format_number(1 / stage_count)}, "
+                f"color={QuickAdapterV3.exit_stages[stage]}"
+                + (
+                    " (final, closes the remainder)"
+                    if stage == QuickAdapterV3.final_exit_stage()
+                    else ""
+                )
             )
 
-        logger.info(
-            f"Final Exit: natr_multiplier_fraction={format_number(QuickAdapterV3._FINAL_EXIT_STAGE_PARAMS[0])}, stake_percent={format_number(QuickAdapterV3._FINAL_EXIT_STAGE_PARAMS[1])}, color={QuickAdapterV3._FINAL_EXIT_STAGE_PARAMS[2]}"
-        )
-
         logger.info("Protections:")
-        if self.protections:
-            for protection in self.protections:
+        if protections:
+            for protection in protections:
                 method = protection.get("method", "Unknown")
                 protection_params = {k: v for k, v in protection.items() if k != "method"}
                 logger.info(
@@ -1325,7 +1396,7 @@ class QuickAdapterV3(IStrategy):
             for order in trade.select_filled_orders(trade.exit_side)
             if (order.ft_order_tag or "").startswith(QuickAdapterV3._TAKE_PROFIT_ORDER_TAG_PREFIX)
         )
-        return min(n_filled_take_profit_exits, QuickAdapterV3._FINAL_EXIT_STAGE)
+        return min(n_filled_take_profit_exits, QuickAdapterV3.final_exit_stage())
 
     @staticmethod
     @lru_cache(maxsize=_CACHE_MAXSIZE_LARGE)
@@ -1453,11 +1524,7 @@ class QuickAdapterV3(IStrategy):
     def get_take_profit_target(
         self, df: DataFrame, trade: Trade, exit_stage: int
     ) -> tuple[float, float] | None:
-        natr_multiplier_fraction = (
-            QuickAdapterV3.partial_exit_stages[exit_stage][0]
-            if exit_stage in QuickAdapterV3.partial_exit_stages
-            else QuickAdapterV3._FINAL_EXIT_STAGE_PARAMS[0]
-        )
+        natr_multiplier_fraction = self.get_exit_stage_natr_multiplier_fraction(exit_stage)
         take_profit_distance = self.get_take_profit_distance(df, trade, natr_multiplier_fraction)
         if not is_finite_number(take_profit_distance) or take_profit_distance <= 0:
             return None
@@ -1853,7 +1920,7 @@ class QuickAdapterV3(IStrategy):
             return None
 
         trade_exit_stage = QuickAdapterV3.get_trade_exit_stage(trade)
-        if trade_exit_stage not in QuickAdapterV3.partial_exit_stages:
+        if not QuickAdapterV3.is_partial_exit_stage(trade_exit_stage):
             return None
 
         df, _ = self.dp.get_analyzed_dataframe(pair=pair, timeframe=self.config.get("timeframe"))
@@ -1880,8 +1947,7 @@ class QuickAdapterV3(IStrategy):
                 ),
             )
         if trade_partial_exit:
-            trade_stake_percent = QuickAdapterV3.partial_exit_stages[trade_exit_stage][1]
-            trade_partial_stake_amount = trade_stake_percent * trade.stake_amount
+            remaining_stages = len(QuickAdapterV3.exit_stages) - trade_exit_stage
             tag = (
                 f"{QuickAdapterV3._TAKE_PROFIT_ORDER_TAG_PREFIX}"
                 f"{trade.trade_direction}_{trade_exit_stage}"
@@ -1904,30 +1970,57 @@ class QuickAdapterV3(IStrategy):
             current_position_value = trade.amount * current_exit_rate
             if current_position_value <= remaining_minimum_value:
                 return -trade.stake_amount, tag
-            trade_partial_stake_amount = min(
-                trade_partial_stake_amount,
-                trade.stake_amount * (1 - remaining_minimum_value / current_position_value),
+            raw_exit_amount = min(
+                float(FtPrecise(trade.amount) / FtPrecise(remaining_stages)),
+                trade.amount - remaining_minimum_value / current_exit_rate,
             )
-            exit_amount = exchange.amount_to_contract_precision(
-                pair,
-                abs(
-                    float(
-                        FtPrecise(trade_partial_stake_amount)
-                        * FtPrecise(trade.amount)
-                        / FtPrecise(trade.stake_amount)
-                    )
-                ),
-            )
+            exit_amount = exchange.amount_to_contract_precision(pair, raw_exit_amount)
             if (
                 exit_amount <= 0
                 or exit_amount * current_exit_rate < exit_minimum_value
                 or (trade.amount - exit_amount) * current_exit_rate < remaining_minimum_value
             ):
                 return -trade.stake_amount, tag
-            return (
-                -trade_partial_stake_amount,
-                tag,
+            # Use a native-domain antecedent; exchange quantization need not be idempotent.
+            native_raw_exit_amount = FtPrecise(raw_exit_amount) / FtPrecise(1)
+            native_raw_exit_quantity = float(native_raw_exit_amount)
+            if (
+                native_raw_exit_quantity != raw_exit_amount
+                and exchange.amount_to_contract_precision(pair, native_raw_exit_quantity)
+                != exit_amount
+            ):
+                native_raw_exit_quantity = float(native_raw_exit_amount + FtPrecise("1e-18"))
+                if (
+                    exchange.amount_to_contract_precision(pair, native_raw_exit_quantity)
+                    != exit_amount
+                ):
+                    return -trade.stake_amount, tag
+            trade_partial_stake_amount = (
+                native_raw_exit_quantity / trade.amount * trade.stake_amount
             )
+            rounding_up = None
+            while 0.0 < trade_partial_stake_amount < trade.stake_amount:
+                roundtrip_amount = exchange.amount_to_contract_precision(
+                    pair,
+                    abs(
+                        float(
+                            FtPrecise(trade_partial_stake_amount)
+                            * FtPrecise(trade.amount)
+                            / FtPrecise(trade.stake_amount)
+                        )
+                    ),
+                )
+                if roundtrip_amount == exit_amount:
+                    return -trade_partial_stake_amount, tag
+                if rounding_up is None:
+                    rounding_up = roundtrip_amount < exit_amount
+                elif (roundtrip_amount < exit_amount) != rounding_up:
+                    # Adjacent callback floats straddle the lot: no exact request exists.
+                    break
+                trade_partial_stake_amount = math.nextafter(
+                    trade_partial_stake_amount, math.inf if rounding_up else 0.0
+                )
+            return -trade.stake_amount, tag
 
         return None
 
@@ -2305,7 +2398,7 @@ class QuickAdapterV3(IStrategy):
             return None
 
         trade_exit_stage = QuickAdapterV3.get_trade_exit_stage(trade)
-        if trade_exit_stage in QuickAdapterV3.partial_exit_stages:
+        if QuickAdapterV3.is_partial_exit_stage(trade_exit_stage):
             return None
 
         if not has_valid_candle_date:
@@ -2534,7 +2627,7 @@ class QuickAdapterV3(IStrategy):
 
             trade_exit_stage = QuickAdapterV3.get_trade_exit_stage(trade)
 
-            for take_profit_stage in QuickAdapterV3.partial_exit_stages:
+            for take_profit_stage in QuickAdapterV3.partial_exit_stages():
                 if take_profit_stage < trade_exit_stage:
                     continue
 
@@ -2550,7 +2643,7 @@ class QuickAdapterV3(IStrategy):
                     "end": end_date,
                     "y_start": partial_take_profit_price,
                     "y_end": partial_take_profit_price,
-                    "color": QuickAdapterV3.partial_exit_stages[take_profit_stage][2],
+                    "color": QuickAdapterV3.exit_stages[take_profit_stage],
                     "line_style": "solid",
                     "width": 1,
                     "label": f"Partial Take-Profit Stage {take_profit_stage}",
@@ -2558,7 +2651,7 @@ class QuickAdapterV3(IStrategy):
                 }
                 annotations.append(take_profit_line_annotation)
 
-            final_exit_stage = QuickAdapterV3._FINAL_EXIT_STAGE
+            final_exit_stage = QuickAdapterV3.final_exit_stage()
             raw_final_take_profit_state = trade.get_custom_data(
                 QuickAdapterV3._FINAL_TAKE_PROFIT_STATE_KEY
             )
@@ -2591,7 +2684,9 @@ class QuickAdapterV3(IStrategy):
                                 "end": end_date,
                                 "y_start": final_take_profit_price,
                                 "y_end": final_take_profit_price,
-                                "color": QuickAdapterV3._FINAL_EXIT_STAGE_PARAMS[2],
+                                "color": QuickAdapterV3.exit_stages[
+                                    QuickAdapterV3.final_exit_stage()
+                                ],
                                 "line_style": "solid",
                                 "width": 1,
                                 "label": "Final Take-Profit Trail (current)",
@@ -2612,7 +2707,7 @@ class QuickAdapterV3(IStrategy):
                         "end": end_date,
                         "y_start": final_take_profit_price,
                         "y_end": final_take_profit_price,
-                        "color": QuickAdapterV3._FINAL_EXIT_STAGE_PARAMS[2],
+                        "color": QuickAdapterV3.exit_stages[QuickAdapterV3.final_exit_stage()],
                         "line_style": "solid",
                         "width": 1,
                         "label": "Final Take-Profit Arming Target",

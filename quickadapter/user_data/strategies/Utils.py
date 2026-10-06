@@ -1041,6 +1041,85 @@ TRADE_NATR_METHODS: Final[tuple[TradeNatrMethod, ...]] = (
 )
 
 
+TakeProfitStageNatrMultiplierFractionSeries = Literal["fibonacci_extensions", "pi_extensions"]
+TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_SERIES: Final[
+    tuple[TakeProfitStageNatrMultiplierFractionSeries, ...]
+] = (
+    "fibonacci_extensions",
+    "pi_extensions",
+)
+
+# Extension bases: stage ``k`` of ``n`` uses the reciprocal of ``base ** (n - k)``.
+# These fractions place partial targets inside the full take-profit distance;
+# they do not extend it. Fibonacci uses integer powers of phi; pi uses integer
+# powers of pi as a custom geometric construction, not a trading convention.
+# The strategy appends the final fraction ``1.0`` to the generated
+# partial-target distance ladder.
+_TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_BASES: Final[dict[str, float]] = {
+    "fibonacci_extensions": (1.0 + math.sqrt(5.0)) / 2.0,
+    "pi_extensions": math.pi,
+}
+
+# The closest partial fraction is 1 / base; a 1.5 floor keeps it at most 2/3.
+# This relative gap does not guarantee distinct prices after rounding.
+_TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_MIN_BASE: Final[float] = 1.5
+
+
+@lru_cache(maxsize=_CACHE_MAXSIZE_SMALL)
+def get_take_profit_stage_natr_multiplier_fractions(
+    series: str, partial_stage_count: int
+) -> tuple[float, ...]:
+    """Return ascending reciprocal-extension fractions for partial take-profit targets.
+
+    Stage ``k`` of ``n`` uses ``1 / base ** (n - k)``. Each fraction scales
+    the full take-profit distance and remains strictly below the independent
+    final fraction ``1.0``.
+    """
+    base = _TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_BASES.get(series)
+    if base is None:
+        raise ValueError(
+            enum_error_message(
+                "take_profit_stage_natr_multiplier_fraction_series",
+                series,
+                TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_SERIES,
+            )
+        )
+    if partial_stage_count < 0:
+        raise ValueError(f"Invalid partial_stage_count value {partial_stage_count}: must be >= 0")
+    if base < _TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_MIN_BASE:
+        raise ValueError(
+            f"Invalid base value {base!r} for series {series!r}: "
+            f"must be >= {_TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_MIN_BASE}"
+        )
+
+    fractions = tuple(
+        base ** -(partial_stage_count - stage) for stage in range(partial_stage_count)
+    )
+    if any(fraction <= 0.0 for fraction in fractions):
+        # Only reachable by denormal underflow: the base floor above guarantees
+        # ``base > 1``, so no rung can reach or exceed ``1.0``.
+        raise ValueError(
+            f"Invalid partial_stage_count value {partial_stage_count!r} for series {series!r}: "
+            "NATR multiplier fractions must be > 0 (underflow to zero)"
+        )
+    return fractions
+
+
+@lru_cache(maxsize=_CACHE_MAXSIZE_SMALL)
+def get_exit_stage_stake_fractions(stage_count: int) -> tuple[float, ...]:
+    """Return each exit's share of the stake still open at that stage.
+
+    A position split across ``stage_count`` exits releases ``1 / stage_count``
+    of its initial stake at each one. The stake remaining before stage ``k`` is
+    ``(stage_count - k) / stage_count`` of the initial one, so releasing
+    ``1 / (stage_count - k)`` of it closes exactly one share. The last stage
+    takes the whole remainder.
+    """
+    if stage_count <= 0:
+        raise ValueError(f"Invalid stage_count value {stage_count!r}: must be >= 1")
+    return tuple(1.0 / (stage_count - stage) for stage in range(stage_count))
+
+
 SPARSE_TRAINING_MASS_THRESHOLD: Final[float] = 0.05
 
 DEFAULT_FIT_LIVE_PREDICTIONS_CANDLES: Final[int] = 100
@@ -1440,7 +1519,10 @@ def get_label_prediction_config(
 
 DEFAULTS_EXIT_PRICING: Final[dict[str, Any]] = {
     "trade_natr_method": TRADE_NATR_METHODS[0],  # "moving_average"
-    "final_take_profit_retracement_fraction": 0.25,
+    "final_take_profit_retracement_fraction": 0.5,
+    "take_profit_stage_natr_multiplier_fraction_series": (
+        TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_SERIES[0]
+    ),
 }
 
 _EXIT_PRICING_SPECS: Final[dict[str, _ParamSpec]] = {
@@ -1448,6 +1530,9 @@ _EXIT_PRICING_SPECS: Final[dict[str, _ParamSpec]] = {
     "final_take_profit_retracement_fraction": _ParamSpec(
         _NumericValidator(min_value=0, max_value=1, min_exclusive=True),
         output_type=float,
+    ),
+    "take_profit_stage_natr_multiplier_fraction_series": _ParamSpec(
+        _EnumValidator(TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_SERIES), output_type=str
     ),
 }
 
@@ -1634,7 +1719,9 @@ def get_causal_mode(config: dict[str, Any], logger: Logger) -> bool:
     return causal_mode
 
 
-def get_label_horizon_candles(config: dict[str, Any], logger: Logger) -> int:
+def get_label_horizon_candles(
+    config: dict[str, Any], logger: Logger, *, warning_messages: set[str] | None = None
+) -> int:
     def _is_positive_int(value: Any) -> bool:
         return not isinstance(value, bool) and isinstance(value, (int, np.integer)) and value >= 1
 
@@ -1643,10 +1730,14 @@ def get_label_horizon_candles(config: dict[str, Any], logger: Logger) -> int:
         fallback = 1
     label_horizon_candles = config.get("label_horizon_candles", fallback)
     if not _is_positive_int(label_horizon_candles):
-        logger.warning(
+        message = (
             f"Invalid label_horizon_candles value {label_horizon_candles!r}: "
             f"must be int >= 1, using {fallback!r}"
         )
+        if warning_messages is None or message not in warning_messages:
+            logger.warning(message)
+            if warning_messages is not None:
+                warning_messages.add(message)
         return fallback
     return int(label_horizon_candles)
 
