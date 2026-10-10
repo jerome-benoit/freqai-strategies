@@ -56,15 +56,22 @@ do not pin incidental wording, number formatting or arbitrary message lengths.
 
 ## Coverage gate
 
-Both strategy suites enforce their own runtime coverage gates. ReforceXY
-measures the complete `ReforceXY/user_data` tree with a 70% minimum, including
-branches and non-imported namespace files. Tests, the analytical package and
-QuickAdapter do not contribute to that denominator. The standalone analysis
-suite has a separate 85% gate; see [its testing documentation](ReforceXY/reward_space_analysis/tests/README.md).
+Both strategy suites measure their complete `user_data` trees, including branches
+and non-imported namespace files. Their gates are defined in the linked coverage
+configurations:
+
+| Suite        | Coverage source                                      | Minimum |
+| ------------ | ---------------------------------------------------- | ------- |
+| QuickAdapter | [`quickadapter/user_data`](quickadapter/.coveragerc) | 68%     |
+| ReforceXY    | [`ReforceXY/user_data`](ReforceXY/.coveragerc)       | 70%     |
+
+Each strategy denominator excludes tests, the analytical package and the other
+strategy. The standalone analysis suite has a separate 85% gate; see
+[its testing documentation](ReforceXY/reward_space_analysis/tests/README.md).
 
 Each strategy's `.coveragerc` is selected explicitly because coverage.py does
 not search parent directories. Set `strategy=quickadapter` in its matching QA
-image and use the same canonical runner command above for its unchanged gate.
+image and use the same canonical runner command above for its own gate.
 
 The shared runner gives both coverage commands the same environment. When running
 `coverage run` and `coverage report` separately, export both variables for both

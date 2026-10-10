@@ -2610,7 +2610,8 @@ def load_real_episodes(
     Returns
     -------
     pd.DataFrame
-        Normalized transitions with required columns.
+        Transitions with required columns and numeric coercion; PnL units and
+        duration timeframes are not converted.
     """
 
     try:
@@ -2789,7 +2790,8 @@ def compute_distribution_shift_metrics(
     results for continuous features (pnl, trade_duration, idle_duration).
     The inferential KS p-value is reported only with
     ``independent_observations=True``; the descriptive KS statistic is always
-    reported. Constants yield exact zero distances and, inferentially, p=1.0.
+    reported. Identical constant distributions yield exact zero distances
+    and, inferentially, p=1.0; constants at different values do not.
     """
     metrics = {}
     continuous_features = _DISTRIBUTION_SHIFT_FEATURES

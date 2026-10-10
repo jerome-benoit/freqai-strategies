@@ -1,5 +1,5 @@
 {
-  "basedpyrightVersion": "1.40.1",
+  "basedpyrightVersion": "1.40.2",
   "diagnostics": [
     {
       "endCharacter": 58,
@@ -133,73 +133,73 @@
     },
     {
       "endCharacter": 29,
-      "endLine": 3160,
+      "endLine": 3162,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "No overloads for \"ptp\" match the provided arguments",
       "rule": "reportCallIssue",
       "severity": "error",
       "startCharacter": 11,
-      "startLine": 3160
+      "startLine": 3162
     },
     {
       "endCharacter": 28,
-      "endLine": 3160,
+      "endLine": 3162,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "Argument of type \"np_1darray[Any] | ExtensionArray | Categorical[object]\" cannot be assigned to parameter \"a\" of type \"_ArrayLikeNumeric_co\" in function \"ptp\"\n  Type \"np_1darray[Any] | ExtensionArray | Categorical[object]\" is not assignable to type \"_ArrayLikeNumeric_co\"\n    Type \"ExtensionArray\" is not assignable to type \"_ArrayLikeNumeric_co\"\n      \"ExtensionArray\" is incompatible with protocol \"_SupportsArray[dtype[number[Any, Any] | numpy.bool[builtins.bool] | object_ | timedelta64[Any]]]\"\n        \"__array__\" is not present\n      \"ExtensionArray\" is incompatible with protocol \"_NestedSequence[_SupportsArray[dtype[number[Any, Any] | numpy.bool[builtins.bool] | object_ | timedelta64[Any]]]]\"\n        \"__reversed__\" is not present\n        \"count\" is not present\n        \"index\" is not present\n  ...",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 18,
-      "startLine": 3160
+      "startLine": 3162
     },
     {
       "endCharacter": 65,
-      "endLine": 3169,
+      "endLine": 3171,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "Cannot access attribute \"mean\" for class \"Categorical[object]\"\n  Attribute \"mean\" is unknown",
       "rule": "reportAttributeAccessIssue",
       "severity": "error",
       "startCharacter": 61,
-      "startLine": 3169
+      "startLine": 3171
     },
     {
       "endCharacter": 65,
-      "endLine": 3169,
+      "endLine": 3171,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "Cannot access attribute \"mean\" for class \"ExtensionArray\"\n  Attribute \"mean\" is unknown",
       "rule": "reportAttributeAccessIssue",
       "severity": "error",
       "startCharacter": 61,
-      "startLine": 3169
+      "startLine": 3171
     },
     {
       "endCharacter": 5,
-      "endLine": 4081,
+      "endLine": 4083,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "Type \"dict[bytes, bytes] | dict[str, RewardParamValue]\" is not assignable to declared type \"RewardParams\"\n  Type \"dict[bytes, bytes] | dict[str, RewardParamValue]\" is not assignable to type \"RewardParams\"\n    \"dict[bytes, bytes]\" is not assignable to \"dict[str, RewardParamValue]\"\n      Type parameter \"_KT@dict\" is invariant, but \"bytes\" is not the same as \"str\"\n      Type parameter \"_VT@dict\" is invariant, but \"bytes\" is not the same as \"RewardParamValue\"",
       "rule": "reportAssignmentType",
       "severity": "error",
       "startCharacter": 34,
-      "startLine": 4077
+      "startLine": 4079
     },
     {
       "endCharacter": 43,
-      "endLine": 4078,
+      "endLine": 4080,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "No overloads for \"__init__\" match the provided arguments",
       "rule": "reportCallIssue",
       "severity": "error",
       "startCharacter": 8,
-      "startLine": 4078
+      "startLine": 4080
     },
     {
       "endCharacter": 42,
-      "endLine": 4078,
+      "endLine": 4080,
       "file": "ReforceXY/reward_space_analysis/reward_space_analysis.py",
       "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"iterable\" of type \"Iterable[list[bytes]]\" in function \"__init__\"\n  Type \"Any | None\" is not assignable to type \"Iterable[list[bytes]]\"\n    \"None\" is incompatible with protocol \"Iterable[list[bytes]]\"\n      \"__iter__\" is not present",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 13,
-      "startLine": 4078
+      "startLine": 4080
     },
     {
       "endCharacter": 22,

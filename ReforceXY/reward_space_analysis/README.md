@@ -188,6 +188,16 @@ not enum objects. Missing required columns fail the CLI. Nonnumeric values and
 infinities become NaN with warnings; this is not full semantic validation of a
 trading trajectory.
 
+For comparisons with synthetic samples, use the same units and state semantics:
+
+- `pnl` is the current fee-adjusted fractional return (`0.03` means 3%), not
+  currency or percentage points. Include unrealized PnL during open-position
+  holds, not only realized exit results; neutral-position rows have zero PnL.
+- `trade_duration` and `idle_duration` count candles, not minutes or seconds.
+  Use a comparable candle timeframe in both datasets.
+- Loading coerces numeric values but does not convert units, resample transitions
+  or reconstruct missing open-position PnL.
+
 Accepted envelopes:
 
 - A pandas DataFrame or other DataFrame-compatible records/column arrays.
@@ -301,8 +311,11 @@ be overridden via `--params`.
 
 ### Diagnostics & Validation
 
-- **`--check_invariants`** (numeric 0/1, default: true) – Enable runtime
-  invariant checks; `0` makes diagnostics advisory and can hide violations.
+- **`--check_invariants`** (numeric 0/1, default: true) – Enable post-kernel
+  exit-factor guards for non-finite factors and negative factors with nonnegative
+  PnL, plus excessive-factor and negative-efficiency warnings. `0` disables these
+  guards and warnings; simulation assertions, strict parameter validation and
+  statistical validation remain active.
 - **`--strict_validation`** (bare flag, always true in CLI) – Enforce parameter
   bounds, finite checks and exact `exit_potential_mode` choices. The CLI cannot
   disable this. Relaxed Python API validation may clamp/canonicalize with
@@ -429,6 +442,8 @@ Let `max_u = max_unrealized_profit`, `min_u = min_unrealized_profit`,
 `range = max_u - min_u`, `ratio = (pnl - min_u)/range`,
 `min_range = max(1e-6, 0.01 · pnl_target)`. Then:
 
+- If `np.isclose(pnl, 0.0)` (`abs(pnl) <= 1e-8`):
+  `efficiency_coefficient = 1`; otherwise apply the following cases.
 - If `range < min_range`: `efficiency_coefficient = 1` (guard against division
   explosion)
 - If `pnl > 0`:
@@ -542,12 +557,14 @@ The hold potential combines PnL and duration signals with an asymmetric duration
 multiplier for loss-side holds:
 
 ```
-Φ_hold(s) = scale · 0.5 · [T_pnl(g·r_pnl) + sign(r_pnl)·m_dur·T_dur(g·r_dur)]
+Φ_hold(s) = scale · 0.5 · [T_pnl(g·r_pnl) + sign_eps(r_pnl)·m_dur·T_dur(g·r_dur)]
 ```
 
 where:
 
 - `r_pnl = pnl / pnl_target`
+- `sign_eps(r_pnl) = 0` when `abs(r_pnl) <= 1e-8`, otherwise `sign(r_pnl)`;
+  this is the near-zero guard applied by `np.isclose(r_pnl, 0.0)`
 - `r_dur = max(duration_ratio, 0)`
 - `scale = base_factor · hold_potential_ratio`
 - `g = hold_potential_gain`
@@ -779,7 +796,8 @@ Within the same analyzer revision, identical `params_hash` values mean the resol
 | `*_ks_pvalue`     | KS test p-value                       | API-only with `independent_observations=True`; omitted by the descriptive CLI |
 
 Implementation: up to 50 evenly spaced histogram edges (normally 49 bins) with
-ε=1e-10; constants have zero divergence.
+ε=1e-10. Identical constant distributions have zero distances; constants at
+different values are compared normally and can have nonzero distances.
 
 Non-finite numeric values in real episodes are marked missing. Each feature is
 compared only when both synthetic and real data contain at least 10 finite
