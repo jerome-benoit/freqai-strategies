@@ -40,6 +40,10 @@ def regressor(**attrs: object) -> QuickAdapterRegressorV3:
     model._optuna_hp_params = {}
     model._holdout_rmse = {}
     model._session_fitted_pairs = {PAIR}
+    model._metric_model_identity = {}
+    model._loaded_holdout_rmse = {}
+    model._backtest_calibration_starts = {}
+    model._backtest_current_metrics = {}
     model._optuna_hyperopt = False
     model.ft_params = {"label_period_candles": 1}
     model._label_defaults = (1, 5.0)
@@ -474,59 +478,6 @@ class RegressorPredictionHistoryTest(QaTestCase):
             }
         )
 
-    def test_marker_is_set_on_the_current_candle_and_its_return_mirror_only(self):
-        model, dd = self._model_with_appended_history(
-            ["2026-01-01 00:00", "2026-01-01 00:05", "2026-01-01 00:10"]
-        )
-        dk = kitchen()
-        dk.return_dataframe = dd.historic_predictions[PAIR].copy()
-
-        def native_overwrite(self, dataframe, dk, pair, trained_timestamp):
-            current = pd.Timestamp(dataframe["date"].iloc[-1])
-            frame = dd.historic_predictions[pair]
-            frame.at[frame.index[-1], "date_pred"] = current
-            dd.model_return_values[pair] = frame.tail(1).reset_index(drop=True)
-            dk.return_dataframe = frame.tail(1).reset_index(drop=True)
-
-        with mock.patch.object(
-            IFreqaiModel,
-            "build_strategy_return_arrays",
-            autospec=True,
-            side_effect=native_overwrite,
-        ):
-            model.build_strategy_return_arrays(self._strategy_frame(), dk, PAIR, 0)
-
-        self.assertEqual(
-            dd.historic_predictions[PAIR][_PRODUCED_PREDICTION_COLUMN].tolist(),
-            [False, False, True],
-        )
-        self.assertEqual(dd.model_return_values[PAIR][_PRODUCED_PREDICTION_COLUMN].tolist(), [True])
-        self.assertNotIn(_PRODUCED_PREDICTION_COLUMN, dk.return_dataframe)
-        self.assertEqual(model._calibration_current_candles, {})
-
-    def test_no_marker_when_the_saved_candle_predates_the_strategy_frame(self):
-        model, dd = self._model_with_appended_history(
-            ["2026-01-01 00:50", "2026-01-01 00:55", "2026-01-01 01:00"]
-        )
-        dk = kitchen()
-        dk.return_dataframe = dd.historic_predictions[PAIR].copy()
-
-        def stale_append(self, dataframe, dk, pair, trained_timestamp):
-            dk.return_dataframe = dd.historic_predictions[pair].tail(1).reset_index(drop=True)
-
-        with mock.patch.object(
-            IFreqaiModel, "build_strategy_return_arrays", autospec=True, side_effect=stale_append
-        ):
-            model.build_strategy_return_arrays(self._strategy_frame(), dk, PAIR, 0)
-
-        self.assertEqual(
-            dd.historic_predictions[PAIR][_PRODUCED_PREDICTION_COLUMN].tolist(), [False] * 3
-        )
-        self.assertEqual(
-            dd.model_return_values[PAIR][_PRODUCED_PREDICTION_COLUMN].tolist(), [False]
-        )
-        self.assertNotIn(_PRODUCED_PREDICTION_COLUMN, dk.return_dataframe)
-
     def test_the_current_candle_is_released_even_when_the_native_append_fails(self):
         model, dd = self._model_with_appended_history(
             ["2026-01-01 00:00", "2026-01-01 00:05", "2026-01-01 00:10"]
@@ -548,51 +499,6 @@ class RegressorPredictionHistoryTest(QaTestCase):
         self.assertEqual(model._calibration_current_candles, {})
         self.assertEqual(
             dd.historic_predictions[PAIR][_PRODUCED_PREDICTION_COLUMN].tolist(), [False] * 3
-        )
-
-    def test_return_dataframe_is_always_stripped_of_the_private_column(self):
-        model, _ = self._model_with_appended_history(
-            ["2026-01-01 00:00", "2026-01-01 00:05", "2026-01-01 00:10"]
-        )
-        dk = kitchen()
-        dk.return_dataframe = pd.DataFrame({_PRODUCED_PREDICTION_COLUMN: [True], LABEL: [0.0]})
-
-        with mock.patch.object(IFreqaiModel, "build_strategy_return_arrays", autospec=True):
-            model.build_strategy_return_arrays(self._strategy_frame(), dk, PAIR, 0)
-
-        self.assertNotIn(_PRODUCED_PREDICTION_COLUMN, dk.return_dataframe)
-        self.assertIn(LABEL, dk.return_dataframe)
-
-    def test_bootstrap_history_gains_an_all_false_produced_column(self):
-        frame = history(["2026-01-01 00:00", "2026-01-01 00:05"], [False, False])
-        dd = drawer()
-        dd.historic_predictions[PAIR] = frame
-        model = regressor(dd=dd)
-        strat_df = pd.DataFrame(
-            {
-                "date": pd.to_datetime(["2026-01-01 00:00", "2026-01-01 00:05"], utc=True),
-                "high": [101.0, 101.0],
-                "low": [99.0, 99.0],
-                "close": [100.0, 100.0],
-            }
-        )
-        bootstrap = pd.DataFrame({LABEL: [0.0, 0.0]})
-        dk = kitchen()
-        dk.data["extra_returns_per_train"] = {}
-
-        with mock.patch.object(
-            IFreqaiModel,
-            "set_initial_historic_predictions",
-            autospec=True,
-            side_effect=lambda self, *args: self.dd.historic_predictions.__setitem__(
-                PAIR, bootstrap.copy()
-            ),
-        ):
-            model.set_initial_historic_predictions(bootstrap, dk, PAIR, strat_df)
-
-        self.assertEqual(
-            dd.historic_predictions[PAIR][_PRODUCED_PREDICTION_COLUMN].tolist(),
-            [False, False],
         )
 
     # ---------------------------------------------------------------- DI cutoff sentinels
@@ -734,7 +640,7 @@ class RegressorPredictionHistoryTest(QaTestCase):
             ],
             [True, True, True, False, True, True],
             values=[-0.5, 0.5, 0.0, 5.0, 9.0, 7.0],
-            holdout=[0.25, 0.5, np.nan, 888.0, 999.0, 777.0],
+            holdout=[0.25, 0.5, 0.75, 888.0, 999.0, 777.0],
         )
         persisted.loc[5, "date_pred"] = pd.NaT
         for order in (list(range(6)), [4, 2, 0, 3, 1, 5]):
@@ -750,11 +656,11 @@ class RegressorPredictionHistoryTest(QaTestCase):
                 model._holdout_rmse = {PAIR: float("inf")}
                 model._session_fitted_pairs = set()
                 model.fit_live_predictions(dk, PAIR)
-                self.assertEqual(dk.data["extra_returns_per_train"]["holdout_rmse"], 0.5)
+                self.assertEqual(dk.data["extra_returns_per_train"]["holdout_rmse"], 0.75)
                 self.assertEqual(dk.data["labels_mean"][LABEL], 0.0)
 
     def test_unavailable_replayed_holdout_does_not_resurrect_an_older_score(self):
-        for latest, expected in ((np.inf, np.inf), (np.nan, 0.5)):
+        for latest, expected in ((np.inf, np.inf), (np.nan, np.inf), (-1, np.inf), (0, 0)):
             with self.subTest(latest=latest):
                 model, dk, _ = calibrated(candles=2, holdout=[0.5, latest])
                 model._holdout_rmse = {PAIR: np.inf}

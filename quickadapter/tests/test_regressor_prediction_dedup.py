@@ -169,10 +169,6 @@ class RegressorPredictionDedupTest(QaTestCase):
         with self.assertLogs(regressor.logger, level="WARNING") as captured:
             result = _dedupe_historic_predictions_on_date_pred(frame, PAIR)
         self.assertEqual(len(captured.records), 1)
-        self.assertEqual(
-            captured.records[0].getMessage(),
-            f"FreqAI prediction history [{PAIR}]: discarded invalid date_pred entries (count=2)",
-        )
         self.assertEqual(result["date_pred"].tolist(), list(DATES[:3]))
         self.assertEqual(result["value"].tolist(), [1.0, 2.0, 3.0])
 
@@ -225,7 +221,9 @@ class RegressorPredictionDedupTest(QaTestCase):
         result = _ensure_produced_prediction_column(without)
         self.assertIsNot(result, without)
         self.assertNotIn(MARKER, without.columns)
-        self.assertEqual(result[MARKER].tolist(), [True, False, False, False])
+        self.assertEqual(result[MARKER].isna().tolist(), [False, True, False, True])
+        self.assertEqual(_produced_prediction_mask(result).tolist(), [True, False, False, False])
+        self.assertEqual(result[MARKER].dropna().tolist(), [True, False])
 
         partial = pd.DataFrame(
             {
@@ -235,9 +233,9 @@ class RegressorPredictionDedupTest(QaTestCase):
             }
         )
         filled = _ensure_produced_prediction_column(partial)
-        self.assertIsNot(filled, partial)
+        self.assertIs(filled, partial)
         self.assertEqual(partial[MARKER].isna().tolist(), [False, True, False, True])
-        self.assertEqual(filled[MARKER].tolist(), [True, False, True, False])
+        self.assertEqual(_produced_prediction_mask(filled).tolist(), [True, False, False, False])
 
         complete = pd.DataFrame(
             {

@@ -12,6 +12,7 @@ morphology, not returns. Regressor error is a model diagnostic, not a profit sco
 - [Configuration formats](#configuration-formats)
 - [Continual learning](#continual-learning)
 - [Prediction warmup and restarts](#prediction-warmup-and-restarts)
+- [Prediction diagnostics and gaps](#prediction-diagnostics-and-gaps)
 - [Configuration reference](#configuration-reference)
 
 ## Quick start
@@ -117,8 +118,8 @@ Use model-specific training parameters supported by the selected backend.
 `freqai.optuna_hyperopt.enabled=false` disables regressor and dynamic label
 HPO. When enabled, trial, worker and timeout budgets apply. Label HPO selects
 morphology parameters, not held-out trading profit. `holdout_rmse` reports
-weighted error on the original label scale before deployment refit; unavailable
-holdouts produce infinity. Use the [evaluation protocol](../docs/evaluation.md)
+weighted error on the original label scale before deployment refit. Unavailable
+scores and their graph representation are described in [Prediction diagnostics and gaps](#prediction-diagnostics-and-gaps). Use the [evaluation protocol](../docs/evaluation.md)
 for economic comparison and the limitations of threshold replay in native
 backtests. Changing fitted pipelines, label weighting or study schemas can
 require a new `freqai.identifier` or an intentional reset; see the reference.
@@ -147,14 +148,24 @@ later model left under the same identifier is not reused when a backtest is
 extended into the past. Live and dry-run restarts still restore compatible
 deployed models.
 
+Rolling backtests isolate models and prediction caches under
+`models/<identifier>/backtesting/<fingerprint>/`. The fingerprint covers the
+configuration, effective label parameters, QuickAdapter implementation, dependency
+versions, base OHLCV and calculated features, including informative and correlated
+features. Changed inputs or settings create a separate namespace; old artifacts
+are retained, not deleted. Extending the dataset also creates a new namespace.
+Cached windows must match the exact ordered candle dates and prediction schema.
+Older unscoped caches are not reused. Replaying stored live predictions with
+`freqai_backtest_live_models=true` remains a separate Freqtrade mode, without model training.
+
 ## Prediction warmup and restarts
 
-In live and dry-run modes, each pair requires
-`freqai.fit_live_predictions_candles` real model predictions before adaptive
+Live, dry-run and backtest replay require
+`freqai.fit_live_predictions_candles` real model predictions per pair before adaptive
 thresholds become available. The Nth observation first affects the next
 prediction update, not the candle that produced it. FreqAI bootstrap
-predictions made from the initial training frame do not count. Warmup progress
-from persisted real predictions is restored after a restart. FreqAI saves
+predictions made from the initial training frame do not count. In live and dry-run,
+warmup progress from persisted real predictions is restored after a restart. FreqAI saves
 prediction history after training attempts and on clean shutdown. After an
 abrupt stop or hard reboot, predictions since the last history save may be
 lost, so those observations must accumulate again. Legacy rows missing
@@ -167,14 +178,53 @@ within its observations, is greater than
 `fit_live_predictions_candles × timeframe`. An observation exactly one horizon
 old remains eligible. Downtime and expired-model rows are excluded; genuine
 zero and outlier-rejected predictions count. Predictions align to candle dates;
-candles without predictions have `do_predict=0` and downtime zeros display but
-never calibrate.
+candles without predictions retain their native status but display gaps rather
+than fabricated zero predictions.
 
-After a restart, persisted `holdout_rmse` is recovered from the latest produced
-prediction available at the decision time, independently of the calibration
-window. A newer unavailable score remains unavailable rather than reviving an
-older finite score. Recovery does not warm up adaptive thresholds; a model fitted
-in the current session keeps its in-memory score.
+After a restart, the loaded model's `holdout_rmse` metadata takes precedence.
+Only when that field is absent does recovery use the latest produced prediction
+available at the decision time, independently of the calibration window.
+A newer unavailable score remains unavailable rather than reviving an older
+finite score. Recovery does not warm up adaptive thresholds; a model fitted in
+the current session keeps its in-memory score. Missing columns in old histories
+are added without copying current metrics into earlier candles.
+
+## Prediction diagnostics and gaps
+
+`prediction_available` describes prediction provenance, not entry permission:
+
+| Value               | Meaning                                                                                                       |
+| ------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `1`                 | A model output from complete input features, including genuine zero and outlier-rejected outputs.             |
+| `0`                 | A known absence: no model, bootstrap, missing input features, downtime, model expiration or backtest padding. |
+| `NaN` / JSON `null` | An ambiguous legacy row whose provenance cannot be established.                                               |
+
+Rows with missing or infinite input features remain rejected after preprocessing.
+Their missing-input mask accumulates with outlier rejections; zero-filling inside
+preprocessing does not make an observation valid. Entry still requires
+`do_predict=1` and `DI_catch=1`; `prediction_available=1` alone is insufficient.
+Model expiration retains `do_predict=2` and its existing exit behavior.
+
+For known absences, predictions, their statistics and thresholds, RMSE and DI
+values are `NaN`, rendered as graph gaps and JSON `null` by Freqtrade.
+Genuine zeros remain visible. Ambiguous legacy values are retained rather than
+erased or asserted to be real observations; they do not calibrate thresholds.
+Unknown, negative or non-finite RMSE is unavailable, never a perfect score of
+zero. Internally, unavailable model RMSE remains infinity.
+Already persisted numeric zeros cannot be identified retrospectively as earlier
+missing values; model metadata is the preferred recovery source.
+
+Before FreqAI, `&s-extrema` contains the training target; after FreqAI, it
+contains the model prediction. The historical target direction and label-weight
+subplots show target construction, not forecasts. Raw Zigzag direction is sparse
+(-1/0/+1). Smoothed direction can legitimately be zero outside the smoothing
+support or through cancellation. A flat series with no confirmed pivot does not
+provide usable labels merely because its target values are zero.
+
+The four `extrema_direction`, `extrema_direction_smoothed`, `extrema_weight` and
+`extrema_weight_smoothed` diagnostics are also returned in backtests without
+becoming model features. Missing diagnostics, including weights when weighting is
+disabled, remain `NaN`; they are not synthesized as zero weights.
 
 ## Configuration reference
 

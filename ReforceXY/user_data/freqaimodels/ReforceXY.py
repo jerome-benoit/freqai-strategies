@@ -155,18 +155,20 @@ def _produced_prediction_mask(frame: pd.DataFrame) -> NDArray[np.bool_]:
 
 
 def _ensure_prediction_provenance(frame: pd.DataFrame) -> pd.DataFrame:
-    """Preserve explicit markers and infer only distinguishable legacy predictions."""
+    """Infer proven legacy outputs without turning ambiguous zeros into placeholders."""
+    inferred = pd.Series(np.nan, index=frame.index, dtype=object)
+    inferred.loc[_legacy_produced_prediction_mask(frame)] = True
+    if "do_predict" in frame:
+        inferred.loc[pd.to_numeric(frame["do_predict"], errors="coerce").eq(2)] = False
     if _PRODUCED_COLUMN not in frame:
         result = frame.copy()
-        result[_PRODUCED_COLUMN] = _legacy_produced_prediction_mask(frame)
+        result[_PRODUCED_COLUMN] = inferred
         return result
-    missing = frame[_PRODUCED_COLUMN].isna()
+    missing = frame[_PRODUCED_COLUMN].isna() & inferred.notna()
     if not missing.any():
         return frame
     result = frame.copy()
-    result[_PRODUCED_COLUMN] = frame[_PRODUCED_COLUMN].where(
-        ~missing, _legacy_produced_prediction_mask(frame)
-    )
+    result[_PRODUCED_COLUMN] = frame[_PRODUCED_COLUMN].where(~missing, inferred)
     return result
 
 

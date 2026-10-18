@@ -289,32 +289,32 @@ class QuickAdapterV3(IStrategy):
         return {
             "main_plot": {},
             "subplots": {
-                "accuracy": {
-                    "holdout_rmse": {"color": "violet", "type": "line"},
+                "holdout error": {
+                    "holdout_rmse": {"color": "violet", "type": "scatter"},
                 },
-                "extrema": {
+                "predicted extrema": {
                     f"{EXTREMA_COLUMN}_maxima_threshold": {
                         "color": "blue",
-                        "type": "line",
+                        "type": "scatter",
                     },
                     f"{EXTREMA_COLUMN}_minima_threshold": {
                         "color": "cyan",
-                        "type": "line",
+                        "type": "scatter",
                     },
-                    EXTREMA_COLUMN: {"color": "orange", "type": "line"},
+                    EXTREMA_COLUMN: {"color": "orange", "type": "scatter"},
                 },
-                "direction": {
+                "historical target direction": {
                     EXTREMA_DIRECTION_COLUMN: {"color": "steelblue", "type": "bar"},
                     EXTREMA_DIRECTION_SMOOTHED_COLUMN: {
                         "color": "orange",
-                        "type": "line",
+                        "type": "scatter",
                     },
                 },
-                "weight": {
+                "historical label weights": {
                     EXTREMA_WEIGHT_COLUMN: {"color": "steelblue", "type": "bar"},
                     EXTREMA_WEIGHT_SMOOTHED_COLUMN: {
                         "color": "orange",
-                        "type": "line",
+                        "type": "scatter",
                     },
                 },
             },
