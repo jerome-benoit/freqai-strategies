@@ -153,9 +153,11 @@ deployed models.
 
 Backtests store reusable models and predictions under
 `models/<identifier>/backtesting/<fingerprint>/`. Cache identity includes input
-data, FreqAI settings, effective label parameters, strategy/model code and
-dependency versions. Changing these inputs or extending the dataset uses a
-separate cache directory. Existing artifacts remain on disk; they are not deleted.
+data, effective model and strategy configuration (including settings outside
+`freqai`), effective label parameters, strategy/model code and dependency versions.
+Changing these inputs or extending the dataset uses a separate cache directory.
+Even configuration changes unrelated to training can therefore trigger retraining.
+Existing artifacts remain on disk; they are not deleted.
 
 Any prepared input column with pandas `object` or `category` dtype disables
 reuse, including non-feature inputs and structured orderflow data. Value hashing

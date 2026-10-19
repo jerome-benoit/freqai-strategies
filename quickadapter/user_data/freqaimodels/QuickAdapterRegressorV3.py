@@ -2288,8 +2288,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         digest = sha256()
         configuration = {
             "freqai": self._backtest_config,
-            "timeframe": self.config["timeframe"],
-            "candle_type": str(self.config.get("candle_type_def", "")),
+            "model_config": self.config,
+            "strategy_config": strategy.config,
             "pair": pair,
             "labels": {label: strategy.get_label_params(pair, label) for label in LABEL_COLUMNS},
             "versions": {

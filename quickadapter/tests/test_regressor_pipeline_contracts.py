@@ -582,6 +582,7 @@ class BacktestContractsTest(QaTestCase):
         strategy_path: Path | None = None,
         model_path: Path | None = None,
         freqai_overrides: dict | None = None,
+        config_overrides: dict | None = None,
     ):
         frame = frame.copy()
         frame["date"] = pd.to_datetime(frame["date"], utc=True)
@@ -620,6 +621,7 @@ class BacktestContractsTest(QaTestCase):
             freqaimodel=model_name,
             freqaimodel_path=str(model_path or CONFIG_TEMPLATE.parent / "freqaimodels"),
         )
+        config = _merge(config, config_overrides or {})
         model = FreqaiModelResolver.load_freqaimodel(config)
         model.live = False
         strategy = StrategyResolver._load_strategy(
@@ -747,6 +749,45 @@ class BacktestContractsTest(QaTestCase):
             changed = self._run_backtest(directory / "shared", frame, **options)
             fresh = self._run_backtest(directory / "fresh", frame, **options)
             cached = self._run_backtest(directory / "shared", frame, **options)
+
+            self.assertNotEqual(first.data_path.parent, changed.data_path.parent)
+            self.assertEqual(changed.data_path.parent, cached.data_path.parent)
+            pd.testing.assert_frame_equal(changed.return_dataframe, fresh.return_dataframe)
+            pd.testing.assert_frame_equal(cached.return_dataframe, fresh.return_dataframe)
+            self.assertFalse(
+                np.allclose(
+                    first.return_dataframe[LABEL], fresh.return_dataframe[LABEL], equal_nan=True
+                )
+            )
+
+    def test_root_target_configuration_isolates_models_and_predictions(self):
+        with temporary_directory() as directory:
+            implementations = directory / "implementations"
+            implementations.mkdir()
+            (implementations / "configured_targets.py").write_text(
+                "from QuickAdapterV3 import QuickAdapterV3\n"
+                "class ConfiguredTargets(QuickAdapterV3):\n"
+                "    def set_freqai_targets(self, dataframe, metadata, **kwargs):\n"
+                "        result = super().set_freqai_targets(dataframe, metadata, **kwargs)\n"
+                "        result['&s-extrema'] *= self.config['target_scale']\n"
+                "        return result\n"
+            )
+            frame = ohlcv_frame(
+                100 + 8 * np.sin(np.arange(720) / 6) + 2 * np.sin(np.arange(720) / 23)
+            )
+            options = {"strategy_name": "ConfiguredTargets", "strategy_path": implementations}
+            first = self._run_backtest(
+                directory / "shared", frame, config_overrides={"target_scale": 1.0}, **options
+            )
+            changed = self._run_backtest(
+                directory / "shared", frame, config_overrides={"target_scale": -1.0}, **options
+            )
+            fresh = self._run_backtest(
+                directory / "fresh", frame, config_overrides={"target_scale": -1.0}, **options
+            )
+            cached = self._run_backtest(
+                directory / "shared", frame, config_overrides={"target_scale": -1.0}, **options
+            )
 
             self.assertNotEqual(first.data_path.parent, changed.data_path.parent)
             self.assertEqual(changed.data_path.parent, cached.data_path.parent)
