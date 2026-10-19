@@ -155,18 +155,20 @@ def _produced_prediction_mask(frame: pd.DataFrame) -> NDArray[np.bool_]:
 
 
 def _ensure_prediction_provenance(frame: pd.DataFrame) -> pd.DataFrame:
-    """Preserve explicit markers and infer only distinguishable legacy predictions."""
+    """Infer proven legacy outputs without turning ambiguous zeros into placeholders."""
+    inferred = pd.Series(np.nan, index=frame.index, dtype=object)
+    inferred.loc[_legacy_produced_prediction_mask(frame)] = True
+    if "do_predict" in frame:
+        inferred.loc[pd.to_numeric(frame["do_predict"], errors="coerce").eq(2)] = False
     if _PRODUCED_COLUMN not in frame:
         result = frame.copy()
-        result[_PRODUCED_COLUMN] = _legacy_produced_prediction_mask(frame)
+        result[_PRODUCED_COLUMN] = inferred
         return result
-    missing = frame[_PRODUCED_COLUMN].isna()
+    missing = frame[_PRODUCED_COLUMN].isna() & inferred.notna()
     if not missing.any():
         return frame
     result = frame.copy()
-    result[_PRODUCED_COLUMN] = frame[_PRODUCED_COLUMN].where(
-        ~missing, _legacy_produced_prediction_mask(frame)
-    )
+    result[_PRODUCED_COLUMN] = frame[_PRODUCED_COLUMN].where(~missing, inferred)
     return result
 
 
@@ -219,6 +221,8 @@ def _align_historic_predictions(history: pd.DataFrame, dataframe: pd.DataFrame) 
         aligned["do_predict"] = aligned["do_predict"].where(~missing, 0)
     else:
         aligned["do_predict"] = 0
+    if _PRODUCED_COLUMN in aligned:
+        aligned[_PRODUCED_COLUMN] = aligned[_PRODUCED_COLUMN].where(~missing, False)
     return aligned
 
 
@@ -628,6 +632,29 @@ class ReforceXY(BaseReinforcementLearningModel):
         self._install_replay_persistence()
         self._install_prediction_provenance()
 
+    def _ensure_history_schema(self, dk: FreqaiDataKitchen, pair: str) -> None:
+        """Extend restored history without inventing past observations or metadata."""
+        if pair not in self.dd.historic_predictions:
+            return
+        history = _ensure_prediction_provenance(self.dd.historic_predictions[pair])
+        columns = dict.fromkeys(dk.label_list + dk.unique_class_list, np.nan)
+        for label in dk.label_list + dk.unique_class_list:
+            columns[f"{label}_mean"] = np.nan
+            columns[f"{label}_std"] = np.nan
+        columns.update(dk.data.get("extra_returns_per_train", {}))
+        if self.ft_params.get("DI_threshold", 0) > 0:
+            columns["DI_values"] = np.nan
+        for column, value in columns.items():
+            if column not in history:
+                dtype = (
+                    float
+                    if isinstance(value, (int, float, np.number))
+                    and not isinstance(value, (bool, np.bool_))
+                    else object
+                )
+                history[column] = pd.Series(np.nan, index=history.index, dtype=dtype)
+        self.dd.historic_predictions[pair] = history
+
     def _install_prediction_provenance(self) -> None:
         """Keep live observation metadata local to this model's drawer instance."""
         drawer = self.dd
@@ -651,13 +678,17 @@ class ReforceXY(BaseReinforcementLearningModel):
         def set_initial_with_provenance(
             pair: str, pred_df: pd.DataFrame, dataframe: pd.DataFrame
         ) -> None:
-            drawer.historic_predictions[pair] = _ensure_prediction_provenance(
-                drawer.historic_predictions[pair]
+            history = _dedupe_historic_predictions_on_date_pred(
+                _ensure_prediction_provenance(drawer.historic_predictions[pair]), pair
             )
+            drawer.historic_predictions[pair] = history
+            missing = history.set_index("date_pred").isna()
             set_initial(pair, pred_df, dataframe)
-            drawer.historic_predictions[pair] = _ensure_prediction_provenance(
-                drawer.historic_predictions[pair]
-            )
+            result = drawer.historic_predictions[pair]
+            old_missing = missing.reindex(pd.DatetimeIndex(result["date_pred"]), fill_value=False)
+            old_missing.index = result.index
+            result[missing.columns] = result[missing.columns].mask(old_missing)
+            result.loc[~result["date_pred"].isin(missing.index), _PRODUCED_COLUMN] = False
             drawer.model_return_values[pair] = _align_historic_predictions(
                 drawer.historic_predictions[pair], dataframe
             )
@@ -670,11 +701,11 @@ class ReforceXY(BaseReinforcementLearningModel):
             dk: FreqaiDataKitchen,
             strat_df: pd.DataFrame,
         ) -> None:
-            drawer.historic_predictions[pair] = _ensure_prediction_provenance(
-                drawer.historic_predictions[pair]
-            )
+            self._ensure_history_schema(dk, pair)
+            old_dates = pd.DatetimeIndex(drawer.historic_predictions[pair]["date_pred"])
             append(pair, predictions, do_preds, dk, strat_df)
             history = drawer.historic_predictions[pair]
+            history.loc[~history["date_pred"].isin(old_dates), _PRODUCED_COLUMN] = False
             # The native writer may return without writing an older candle.
             if (
                 not history.empty
@@ -682,7 +713,10 @@ class ReforceXY(BaseReinforcementLearningModel):
                 and pd.to_datetime(history["date_pred"].iloc[-1], utc=True)
                 == pd.to_datetime(strat_df["date"].iloc[-1], utc=True)
             ):
-                history.loc[history.index[-1], _PRODUCED_COLUMN] = True
+                produced = dk.__dict__.get("_reforcexy_prediction_produced")
+                history.at[history.index[-1], _PRODUCED_COLUMN] = bool(
+                    do_preds[-1] != 2 and (produced is None or produced[-1])
+                )
             drawer.model_return_values[pair] = _align_historic_predictions(history, strat_df)
 
         @wraps(attach)
@@ -1750,6 +1784,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         self, unfiltered_df: DataFrame, dk: FreqaiDataKitchen, **kwargs
     ) -> tuple[DataFrame, NDArray[np.int_]]:
         """Feed source dates to inference; parent predict performs the filtering."""
+        dk.__dict__.pop("_reforcexy_prediction_produced", None)
         dk.data_dictionary["prediction_dates"] = unfiltered_df[["date"]]
         try:
             return super().predict(unfiltered_df, dk, **kwargs)
@@ -1774,6 +1809,8 @@ class ReforceXY(BaseReinforcementLearningModel):
             virtual_trade_duration = trade_duration
         np_dataframe: NDArray[np.float32] = dataframe.to_numpy(dtype=np.float32, copy=False)
         n = np_dataframe.shape[0]
+        produced = np.zeros(n, dtype=bool)
+        dk.__dict__["_reforcexy_prediction_produced"] = produced
         window_size: int = self.CONV_WIDTH
         frame_stacking: int = self.frame_stacking
         frame_stacking_enabled: bool = bool(frame_stacking) and frame_stacking > 1
@@ -1979,6 +2016,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                     action,
                 )
 
+            produced[end_idx - 1] = True
             return action
 
         predicted_actions: list[int] = []

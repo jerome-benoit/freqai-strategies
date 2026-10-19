@@ -1,6 +1,7 @@
 """Strategy signal, validation and sizing contracts; requires the Freqtrade QA image."""
 
 import unittest
+import warnings
 from datetime import datetime, timezone
 from unittest import mock
 
@@ -334,6 +335,34 @@ class FeatureEngineeringTest(QaTestCase):
             atol=1e-12,
             equal_nan=True,
         )
+
+    def test_invalid_close_breaks_returns_until_two_valid_prices_resume(self):
+        for invalid in (0.0, -1.0, np.nan, np.inf, -np.inf):
+            with self.subTest(invalid=invalid):
+                frame = _frame([0] * 4)
+                frame.index = [7, 13, 29, 41]
+                frame["close"] = [100.0, invalid, 110.0, 121.0]
+                original = frame.copy(deep=True)
+                with warnings.catch_warnings():
+                    warnings.simplefilter("error", RuntimeWarning)
+                    result = self._strategy().feature_engineering_expand_basic(frame, {})
+                pd.testing.assert_frame_equal(result[original.columns], original)
+                pd.testing.assert_series_equal(
+                    result["%-raw_volume"], original["volume"], check_names=False
+                )
+                np.testing.assert_allclose(
+                    result["%-close_log_return"],
+                    [np.nan, np.nan, np.nan, np.log(1.1)],
+                    equal_nan=True,
+                )
+
+    def test_empty_feature_frame_keeps_its_index_and_columns(self):
+        frame = _frame([]).astype({"close": float, "volume": float})
+        result = self._strategy().feature_engineering_expand_basic(frame, {})
+        self.assertTrue(result.empty)
+        self.assertTrue(result.index.equals(frame.index))
+        self.assertIn("%-close_log_return", result)
+        self.assertIn("%-raw_volume", result)
 
     def test_the_target_column_is_the_neutral_action(self):
         result = self._strategy().set_freqai_targets(

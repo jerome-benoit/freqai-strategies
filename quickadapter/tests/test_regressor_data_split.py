@@ -87,22 +87,38 @@ class KnownAtLookaheadTest(QaTestCase):
         result = QuickAdapterRegressorV3._known_at_lookahead(unfiltered, unfiltered)
         np.testing.assert_array_equal(result.to_numpy(), np.array([9, 1]))
 
-    def test_a_column_holding_nan_is_skipped_entirely(self):
+    def test_unknown_weight_availability_rejects_only_the_affected_rows(self):
         unfiltered = frame(
-            pd.Index([0, 1]),
-            **{LOOKAHEAD: [3.0, np.nan], WEIGHT_LOOKAHEAD: [9, 9]},
+            pd.Index(range(5)),
+            **{LOOKAHEAD: [1] * 5, WEIGHT_LOOKAHEAD: [100.0, np.nan, 1.0, -2.0, 0.5]},
         )
-        result = QuickAdapterRegressorV3._known_at_lookahead(unfiltered, unfiltered)
-        np.testing.assert_array_equal(result.to_numpy(), np.array([9, 9]))
+        model = regressor()
+        features = unfiltered.iloc[:, :0]
 
-    def test_a_lone_column_holding_a_nan_leaves_no_usable_lookahead(self):
-        # The skip is per COLUMN, and the fixture above keeps a clean weight column, so the
-        # surviving values coincide whether or not the guard runs. It is observable only
-        # when the ONLY emitted column carries a NaN: the caller must then get None and fall
-        # back to the position-based purge, where without the guard the NaN reaches
-        # astype(np.int64) and raises IntCastingNaNError out of the function.
-        unfiltered = frame(pd.Index([0, 1]), **{LOOKAHEAD: [3.0, np.nan]})
-        self.assertIsNone(QuickAdapterRegressorV3._known_at_lookahead(unfiltered, unfiltered))
+        available = model._known_before_position_mask(features, unfiltered, PAIR, 5)
+
+        np.testing.assert_array_equal(available, [False, False, True, False, False])
+        self.assertEqual(
+            QuickAdapterRegressorV3._known_at_lookahead(features, unfiltered).iloc[0], 100
+        )
+
+    def test_an_emitted_unknown_label_does_not_fall_back_to_a_short_horizon(self):
+        unfiltered = frame(pd.Index([0, 1, 2]), **{LOOKAHEAD: [0.0, np.nan, 0.0]})
+        model = regressor()
+
+        available = model._known_before_position_mask(unfiltered, unfiltered, PAIR, 3)
+
+        np.testing.assert_array_equal(available, [True, False, True])
+
+    def test_nonfinite_or_overflowing_availability_is_not_mistaken_for_the_past(self):
+        for value in (np.inf, -np.inf, np.iinfo(np.int64).max, np.iinfo(np.uint64).max):
+            with self.subTest(value=value):
+                unfiltered = frame(pd.Index([0, 1]), **{LOOKAHEAD: [value, 0]})
+                model = regressor()
+
+                available = model._known_before_position_mask(unfiltered, unfiltered, PAIR, 2)
+
+                np.testing.assert_array_equal(available, [False, True])
 
     def test_result_is_aligned_to_the_filtered_index(self):
         unfiltered = frame(pd.Index([0, 1, 2]), **{LOOKAHEAD: [5, 6, 7]})

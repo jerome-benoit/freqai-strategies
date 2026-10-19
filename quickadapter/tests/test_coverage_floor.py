@@ -1,12 +1,18 @@
 """Guards the coverage gate itself; requires the Freqtrade QA image."""
 
+import ast
 import configparser
 import os
 import re
 import subprocess
 import unittest
 from pathlib import Path
+from unittest import mock
 
+from coverage.config import DEFAULT_EXCLUDE, DEFAULT_PARTIAL, DEFAULT_PARTIAL_ALWAYS, CoverageConfig
+from coverage.files import find_python_files
+from coverage.misc import join_regex
+from coverage.parser import PythonParser
 from qa_support import COVERAGERC, REPO_ROOT, QaTestCase, temporary_directory
 
 FLOOR = "fail_under"
@@ -16,14 +22,34 @@ NAMESPACE_PACKAGES = "include_namespace_packages"
 OMIT = "omit"
 # The lowest floor the project will accept. Raising it is free; dropping below this is the
 # silent gate disabling that `.coveragerc` and README.md:532 both forbid.
-MINIMUM_FLOOR = 67.0
+MINIMUM_FLOOR = 68.0
 PRAGMA = re.compile(r"#\s*pragma\s*:?\s*no\s*(?:cover|branch)\b", re.IGNORECASE)
-# The other two of coverage.py's three DEFAULT_EXCLUDE patterns.
-ELLIPSIS_BODY = re.compile(r"^\s*(((async )?def .*?)?[\])]+(\s*->.*?)?:\s*)?\.\.\.\s*(#|$)")
-TYPE_CHECKING = re.compile(r"^\s*if (typing\.)?TYPE_CHECKING:")
 INCLUDE = "include"
 MEASURED_TREE = REPO_ROOT / "quickadapter" / "user_data"
 COVERAGE_RUNNER = REPO_ROOT / "scripts" / "run-coverage.sh"
+EXCLUSION_KEYS = (
+    "omit",
+    "include",
+    "patch",
+    "exclude_lines",
+    "exclude_also",
+    "partial_branches",
+    "partial_also",
+    "partial_branches_always",
+)
+
+
+def _branch_counts(parser: PythonParser) -> dict[int, int]:
+    """Count the branch units that coverage actually includes in its denominator."""
+    return {line: count for line, count in parser.exit_counts().items() if count > 1}
+
+
+def _legal_options(section: str) -> set[str]:
+    return {
+        spec[1].split(":")[1]
+        for spec in CoverageConfig.CONFIG_FILE_OPTIONS
+        if spec[1].startswith(f"{section}:") and spec[1] != "run:_crash"
+    }
 
 
 class CoverageFloorTest(QaTestCase):
@@ -32,6 +58,18 @@ class CoverageFloorTest(QaTestCase):
         self.text = COVERAGERC.read_text()
         self.parser = configparser.ConfigParser()
         self.parser.read_string(self.text)
+
+    def test_a_config_has_only_supported_sections_and_options(self):
+        self.assertEqual(sorted(self.parser.sections()), ["report", "run"])
+        for section in ("run", "report"):
+            for option in self.parser[section]:
+                with self.subTest(section=section, option=option):
+                    self.assertIn(option, _legal_options(section))
+
+    def test_no_other_option_declares_a_measurement_root(self):
+        for option in ("source_pkgs", "source_dirs", "plugins"):
+            with self.subTest(option=option):
+                self.assertNotIn(option, self.parser["run"])
 
     def _raw_floor(self) -> str:
         """Extract fail_under by whole-line partitioning, not by regex.
@@ -100,22 +138,8 @@ class CoverageFloorTest(QaTestCase):
         # 7.16.2, all of these are `[report]`-only; it REJECTS exclude_lines, exclude_also
         # and partial_branches under `[run]`, so checking them in both sections is free and
         # forward-looking.
-        for section, keys in (
-            ("run", (OMIT, INCLUDE)),
-            (
-                "report",
-                (
-                    OMIT,
-                    INCLUDE,
-                    "exclude_lines",
-                    "exclude_also",
-                    "partial_branches",
-                    "partial_also",
-                    "partial_branches_always",
-                ),
-            ),
-        ):
-            for key in keys:
+        for section in ("run", "report"):
+            for key in EXCLUSION_KEYS:
                 with self.subTest(section=section, key=key):
                     self.assertNotIn(key, self.parser[section])
 
@@ -153,24 +177,62 @@ class CoverageFloorTest(QaTestCase):
             )
 
     def _assert_source_exclusions(self, tree: Path, *, type_checking_blocks: int = 0):
-        # Statement and partial-branch exemptions can change the gate without a config edit.
-        # The measured tree permits its one import-only TYPE_CHECKING block, but no pragmas
-        # or ellipsis-only bodies. Synthetic consumer trees have no type-only imports.
-        counts = {
-            "coverage pragma": 0,
-            "ellipsis body": 0,
-            "if TYPE_CHECKING:": type_checking_blocks,
-        }
-        found = dict.fromkeys(counts, 0)
-        for path in sorted(tree.rglob("*.py")):
-            for line in path.read_text().splitlines():
-                if PRAGMA.search(line):
-                    found["coverage pragma"] += 1
-                elif ELLIPSIS_BODY.match(line):
-                    found["ellipsis body"] += 1
-                elif TYPE_CHECKING.match(line):
-                    found["if TYPE_CHECKING:"] += 1
-        self.assertEqual(counts, found, "these shrink the denominator without any config change")
+        measured = {Path(path).resolve() for path in find_python_files(str(tree), True)}
+        self.assertEqual(measured, {path.resolve() for path in tree.rglob("*.py")})
+        allowed_blocks = 0
+        for path in sorted(measured):
+            text = path.read_text()
+            self.assertIsNone(PRAGMA.search(text), "coverage pragmas shrink the denominator")
+            baseline = PythonParser(filename=str(path))
+            baseline.parse_source()
+            guarded = PythonParser(filename=str(path), exclude=join_regex(DEFAULT_EXCLUDE))
+            guarded.parse_source()
+            allowed_statements = set()
+            allowed_branches = set()
+            for node in ast.walk(ast.parse(text)):
+                if not isinstance(node, ast.If) or not (
+                    isinstance(node.test, ast.Name) and node.test.id == "TYPE_CHECKING"
+                ):
+                    continue
+                self.assertEqual(path, (MEASURED_TREE / "strategies" / "Utils.py").resolve())
+                self.assertEqual(len(node.body), 1)
+                imported = node.body[0]
+                self.assertIsInstance(imported, ast.ImportFrom)
+                self.assertEqual(imported.module, "xgboost.callback")
+                self.assertEqual(
+                    [(alias.name, alias.asname) for alias in imported.names],
+                    [("TrainingCallback", "XGBoostTrainingCallback")],
+                )
+                self.assertEqual(len(node.orelse), 1)
+                self.assertEqual(
+                    ast.dump(node.orelse[0], include_attributes=False),
+                    ast.dump(ast.parse("XGBoostTrainingCallback = object").body[0]),
+                )
+                allowed_blocks += 1
+                allowed_statements.update(range(node.lineno, imported.end_lineno + 1))
+                allowed_branches.add(node.lineno)
+            with self.subTest(module=path.name):
+                self.assertEqual(
+                    baseline.statements - allowed_statements,
+                    guarded.statements - allowed_statements,
+                )
+                self.assertEqual(
+                    {
+                        line: count
+                        for line, count in _branch_counts(baseline).items()
+                        if line not in allowed_branches
+                    },
+                    {
+                        line: count
+                        for line, count in _branch_counts(guarded).items()
+                        if line not in allowed_branches
+                    },
+                )
+                self.assertEqual(
+                    set(),
+                    baseline.lines_matching(join_regex(DEFAULT_PARTIAL + DEFAULT_PARTIAL_ALWAYS)),
+                )
+        self.assertEqual(allowed_blocks, type_checking_blocks)
 
     def test_no_production_source_widens_coverage_s_default_exclusions(self):
         self._assert_source_exclusions(MEASURED_TREE, type_checking_blocks=1)
@@ -249,6 +311,78 @@ class CoverageFloorTest(QaTestCase):
             [line.strip() for line in self.parser["run"]["source"].splitlines() if line.strip()],
             ["quickadapter/user_data"],
         )
+
+
+class CoverageGuardRegressionTest(QaTestCase):
+    def _run_guard(self, text, method):
+        with temporary_directory() as directory:
+            fixture = directory / ".coveragerc"
+            fixture.write_text(text)
+            result = unittest.TestResult()
+            with mock.patch.dict(globals(), COVERAGERC=fixture):
+                CoverageFloorTest(method).run(result)
+            self.assertEqual(result.testsRun, 1)
+            self.assertEqual(result.errors, [])
+            return not result.failures
+
+    def test_floor_boundary_uses_actual_guard(self):
+        text = COVERAGERC.read_text()
+        for floor, valid in ((67, False), (68, True)):
+            with self.subTest(floor=floor):
+                changed = re.sub(r"(?m)^fail_under\s*=.*$", f"fail_under = {floor}", text)
+                self.assertEqual(self._run_guard(changed, "test_the_floor_is_never_lowered"), valid)
+
+    def test_config_changes_cannot_shrink_or_replace_the_denominator(self):
+        baseline = COVERAGERC.read_text()
+        for option, method in (
+            ("source_dirs = elsewhere", "test_no_other_option_declares_a_measurement_root"),
+            ("plugins = plugin", "test_no_other_option_declares_a_measurement_root"),
+            ("exclude_also = return", "test_no_production_code_is_excluded_by_any_other_key"),
+            ("exclude_line = return", "test_a_config_has_only_supported_sections_and_options"),
+        ):
+            with self.subTest(option=option):
+                changed = baseline.replace("[run]", f"[run]\n{option}")
+                self.assertFalse(self._run_guard(changed, method))
+        self.assertFalse(
+            self._run_guard(
+                baseline + "\n[unexpected]\n",
+                "test_a_config_has_only_supported_sections_and_options",
+            )
+        )
+
+    def test_provenance_is_dated_final_and_sufficient(self):
+        baseline = COVERAGERC.read_text()
+        for annotation, valid in (
+            ("", False),
+            ("# measured 76.0%", False),
+            ("# measured 2026-10-02", False),
+            ("# measured 2026-10-02 at 67.9%", False),
+            ("# measured 2026-10-02 at 76.0% PROVISIONAL", False),
+            ("# measured 2000-01-01 at 76.0%", True),
+        ):
+            with self.subTest(annotation=annotation):
+                text = "\n".join(
+                    annotation if line.startswith("# measured") else line
+                    for line in baseline.splitlines()
+                )
+                valid_result = self._run_guard(text, "test_the_floor_carries_its_provenance")
+                if valid_result:
+                    valid_result = self._run_guard(
+                        text,
+                        "test_the_provenance_records_a_date_and_a_measurement_that_clears_the_floor",
+                    )
+                self.assertEqual(valid_result, valid)
+
+    def test_default_source_exclusions_are_refused(self):
+        for text in (
+            "def omitted():\n    ...\n",
+            "def choose(flag):\n    if True:\n        return flag\n    return None\n",
+            'def choose(flag):\n    marker = "# pragma: no cover"\n    return flag\n',
+        ):
+            with self.subTest(source=text), temporary_directory() as directory:
+                (directory / "sample.py").write_text(text)
+                with self.assertRaises(AssertionError):
+                    CoverageFloorTest()._assert_source_exclusions(directory)
 
 
 if __name__ == "__main__":

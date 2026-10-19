@@ -89,10 +89,8 @@ def _merge(base: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:
 def model_config(tmp_path: Path | str, **overrides: Any) -> dict[str, Any]:
     """Return a private Freqtrade config rooted at `tmp_path`, deep-merged with `overrides`.
 
-    `runmode` is applied only when the caller supplied none, so a test can ask for
-    RunMode.BACKTEST and get it. QuickAdapter assigns it after the merge and is therefore
-    not overridable; copying that order here would silently hand DRY_RUN to the backtest
-    regressions.
+    Explicit run mode and user directory overrides are preserved. The selected directory
+    is normalized to Path; DRY_RUN applies only when the caller omitted runmode.
     """
     config = _merge(_BASE_CONFIG, overrides)
     config["user_data_dir"] = Path(config.get("user_data_dir", tmp_path))

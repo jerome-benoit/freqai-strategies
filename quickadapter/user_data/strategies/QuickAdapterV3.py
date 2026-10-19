@@ -221,7 +221,7 @@ class QuickAdapterV3(IStrategy):
     _ANNOTATION_LINE_OFFSET_CANDLES: Final[int] = 10
 
     def version(self) -> str:
-        return "3.13.0-rc.15"
+        return "3.13.0-rc.16"
 
     timeframe = "5m"
     timeframe_minutes = timeframe_to_minutes(timeframe)
@@ -289,32 +289,28 @@ class QuickAdapterV3(IStrategy):
         return {
             "main_plot": {},
             "subplots": {
-                "accuracy": {
-                    "holdout_rmse": {"color": "violet", "type": "line"},
+                "holdout error": {
+                    "holdout_rmse": {"color": "violet"},
                 },
-                "extrema": {
+                "predicted extrema": {
                     f"{EXTREMA_COLUMN}_maxima_threshold": {
                         "color": "blue",
-                        "type": "line",
                     },
                     f"{EXTREMA_COLUMN}_minima_threshold": {
                         "color": "cyan",
-                        "type": "line",
                     },
-                    EXTREMA_COLUMN: {"color": "orange", "type": "line"},
+                    EXTREMA_COLUMN: {"color": "orange"},
                 },
-                "direction": {
+                "historical target direction": {
                     EXTREMA_DIRECTION_COLUMN: {"color": "steelblue", "type": "bar"},
                     EXTREMA_DIRECTION_SMOOTHED_COLUMN: {
                         "color": "orange",
-                        "type": "line",
                     },
                 },
-                "weight": {
+                "historical label weights": {
                     EXTREMA_WEIGHT_COLUMN: {"color": "steelblue", "type": "bar"},
                     EXTREMA_WEIGHT_SMOOTHED_COLUMN: {
                         "color": "orange",
-                        "type": "line",
                     },
                 },
             },
@@ -2572,13 +2568,17 @@ class QuickAdapterV3(IStrategy):
         leverage = self.config.get("leverage")
         if leverage is None:
             return None
-        if not is_finite_number(leverage):
+        try:
+            converted = float(leverage) if is_finite_number(leverage) else None
+        except (TypeError, ValueError, OverflowError):
+            converted = None
+        if converted is None or not np.isfinite(converted):
             logger.warning(
                 f"Invalid leverage value {leverage!r}: must be a finite number, "
                 "using proposed_leverage"
             )
             return None
-        leverage = float(leverage)
+        leverage = converted
         if leverage < 1.0:
             logger.warning(f"Invalid leverage value {leverage}: must be >= 1.0, clamping to 1.0")
         return leverage

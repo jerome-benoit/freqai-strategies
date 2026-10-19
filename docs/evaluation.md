@@ -9,22 +9,31 @@ procedure does not establish that the current defaults are optimal.
 
 ## What the backtest measures
 
-In Freqtrade 2026.8, the [native backtest][freqai-running] constructs each pair's
-rolling predictions before replaying enabled `fit_live_predictions()` updates
-([training loop][freqai-source], [replay loop][freqai-replay]). It exercises
-rolling model fits, threshold replay and strategy decisions, but a label-HPO
-update during replay cannot affect an already-trained model. Testing that live
-feedback requires a chronological runner that interleaves training, prediction
-and state updates, or a forward dry-run. This repository provides no such runner;
-do not present native-backtest results as validation of the complete live loop.
+The [native FreqAI backtest][freqai-running] runs in two phases:
 
-QuickAdapter predicts smoothed Zigzag morphology, not returns. `holdout_rmse`
-measures the selection model's weighted error on the original label scale,
-on a holdout within the training window, before any deployment refit. An empty
-holdout, including one emptied by causal purging, yields `holdout_rmse=inf`
-(unavailable). With `method=train_test_split`, `test_size=0` disables internal
-validation and final refit, not later rolling predictions; `timeseries_split`
-does not accept zero. Use RMSE to diagnose prediction quality, not profitability.
+1. Train models and construct each pair's rolling predictions
+   ([training loop][freqai-source]).
+2. Replay enabled `fit_live_predictions()` updates over those predictions
+   ([replay loop][freqai-replay]).
+
+QuickAdapter replay follows the same observation and gap-warmup rules as live
+calibration; see its [prediction contract](../quickadapter/README.md#prediction-warmup-and-restarts).
+Label HPO reads OHLCV only through the current replay candle, even when
+predictions are missing. Its parameter changes feed the strategy's per-candle
+NATR and distance calculations. Model RMSE remains tied to its original training
+window.
+
+**Limit:** replay cannot change models trained in the first phase. Evaluating
+the complete live feedback loop requires a chronological runner that interleaves
+training, prediction and state updates, or a forward dry-run. This repository
+provides no such runner. Do not present native-backtest results as validation of
+that complete loop.
+
+Use [QuickAdapter's model-error guidance](../quickadapter/README.md#model-error-and-recovery)
+to interpret RMSE and unavailable scores; neither establishes profitability.
+With `method=train_test_split`, `test_size=0` disables internal validation and
+deployment refit, not later rolling predictions. `timeseries_split` does not
+accept zero.
 
 ## Design the comparison
 
@@ -43,10 +52,11 @@ does not accept zero. Use RMSE to diagnose prediction quality, not profitability
    Threshold calibration must use only predictions available at that time.
 3. **Respect label availability.** Keep `causal_mode` enabled. A historical row
    is not usable for training until all observations needed for its labels and
-   weights are known. Add each `known_at_lookahead` candle offset to its row
-   position in the unsliced window; use the latest availability across labels
-   and weights. Audit it against each split cutoff, rejecting unknown or
-   out-of-frame availability. `causal_mode` alone is not proof of this invariant.
+   weights are known. Compare each `known_at_lookahead` candle offset with the
+   cutoff minus its row position in the unsliced window; use the latest
+   availability across labels and weights. Reject unknown, invalid or
+   out-of-frame availability per row, not by discarding an entire availability
+   column. `causal_mode` alone is not proof of this invariant.
    Allow for additional publication/execution delays where relevant. Purging
    removes overlapping label information; an embargo excludes training samples
    immediately _after_ a validation block when a split uses future training data

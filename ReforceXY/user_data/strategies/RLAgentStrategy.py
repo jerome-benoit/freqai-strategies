@@ -87,7 +87,18 @@ class RLAgentStrategy(IStrategy):
     def feature_engineering_expand_basic(
         self, dataframe: DataFrame, metadata: dict[str, Any], **kwargs
     ) -> DataFrame:
-        dataframe["%-close_log_return"] = np.log(dataframe.get("close")).diff()
+        close_values = dataframe["close"].to_numpy(dtype=float)
+        valid = np.isfinite(close_values) & (close_values > 0.0)
+        invalid_close_count = int(np.count_nonzero(~valid))
+        if invalid_close_count:
+            logger.debug(
+                "feature_engineering_expand_basic: %d close values are non-finite or non-positive; close log return is NaN at those positions",
+                invalid_close_count,
+            )
+        with np.errstate(divide="ignore", invalid="ignore"):
+            dataframe["%-close_log_return"] = pd.Series(
+                np.where(valid, np.log(close_values), np.nan), index=dataframe.index
+            ).diff()
         dataframe["%-raw_volume"] = dataframe.get("volume")
 
         return dataframe

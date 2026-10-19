@@ -166,6 +166,117 @@ class ReviewContractsTest(QaTestCase):
         model.rl_model_predict(pd.DataFrame({"f": [60.0]}), dk, replacement)
         np.testing.assert_array_equal(replacement.observations[-1], [[[0.0, 60.0]]])
 
+    def test_native_missing_feature_counts_only_an_emitted_policy_action(self):
+        for recurrent in (False, True):
+            with self.subTest(recurrent=recurrent):
+                model = self.model()
+                model.recurrent = recurrent
+                model.freqai_info["fit_live_predictions_candles"] = 3
+                pair = "BTC/USDT"
+                dk = FreqaiDataKitchen(model.config, live=True, pair=pair)
+                dk.label_list = ["&-action"]
+                dk.unique_class_list = []
+                dk.data["extra_returns_per_train"] = {}
+                dk.data["labels_mean"] = {"&-action": 0.0}
+                dk.data["labels_std"] = {"&-action": 0.0}
+                candles = pd.DataFrame(
+                    {
+                        "date": pd.date_range("2026-01-01", periods=2, freq="5min", tz="UTC"),
+                        "high": 101.0,
+                        "low": 99.0,
+                        "close": 100.0,
+                    }
+                )
+                model.set_initial_historic_predictions(
+                    pd.DataFrame({"&-action": [4.0]}), dk, pair, candles.iloc[:1]
+                )
+                model.dd.set_initial_return_values(
+                    pair, pd.DataFrame({"&-action": [4.0]}), candles.iloc[:1]
+                )
+                model.dd.append_model_predictions(
+                    pair, pd.DataFrame({"&-action": [4.0]}), np.array([1]), dk, candles.iloc[:1]
+                )
+                features, _ = dk.filter_features(
+                    pd.DataFrame({"%-feature": [np.nan]}, index=[29]),
+                    ["%-feature"],
+                    training_filter=False,
+                )
+                self.assertEqual(features.iloc[0, 0], 0.0)
+                policy = RecordingPolicy()
+                predictions = model.rl_model_predict(features, dk, policy)
+                model.dd.append_model_predictions(pair, predictions, dk.do_predict, dk, candles)
+                self.assertEqual(len(policy.observations), 0 if recurrent else 1)
+                self.assertEqual(dk.do_predict[-1], 0)
+                self.assertEqual(
+                    bool(
+                        model.dd.historic_predictions[pair]["_freqai_strategies_produced"].iloc[-1]
+                    ),
+                    not recurrent,
+                )
+                model.fit_live_predictions(dk, pair)
+                self.assertEqual(dk.data["labels_mean"]["&-action"], 4.0 if recurrent else 2.0)
+
+    def test_policy_production_tracks_calls_not_validity_or_neutral_action(self):
+        for recurrent in (False, True):
+            with self.subTest(recurrent=recurrent):
+                model = self.model()
+                model.live = False
+                model.recurrent = recurrent
+                model.CONV_WIDTH = 2
+                policy = RecordingPolicy()
+                calls = []
+                original_predict = policy.predict
+
+                def record(observation, calls=calls, original_predict=original_predict, **kwargs):
+                    calls.append(
+                        {
+                            key: value.copy() if isinstance(value, np.ndarray) else value
+                            for key, value in kwargs.items()
+                        }
+                    )
+                    return original_predict(observation, **kwargs)
+
+                policy.predict = record
+                dk = SimpleNamespace(
+                    pair="BTC/USDT",
+                    label_list=["&-action"],
+                    do_predict=np.array([1, 0, 1, 1]),
+                    data_dictionary={},
+                )
+                result = model.rl_model_predict(
+                    pd.DataFrame({"f": [10.0, 20.0, 30.0, 40.0]}, index=[7, 13, 29, 41]),
+                    dk,
+                    policy,
+                )
+                expected = [False, False, False, True] if recurrent else [False, True, True, True]
+                produced = dk.__dict__["_reforcexy_prediction_produced"]
+                np.testing.assert_array_equal(produced, expected)
+                self.assertEqual(len(policy.observations), sum(expected))
+                np.testing.assert_array_equal(result["&-action"].iloc[1:], [0, 0, 0])
+                self.assertEqual(result.index.tolist(), [7, 13, 29, 41])
+                if recurrent:
+                    self.assertIsNone(calls[0]["state"])
+                    np.testing.assert_array_equal(calls[0]["episode_start"], [True])
+                dk.do_predict = np.ones(1, dtype=int)
+                model.rl_model_predict(pd.DataFrame({"f": [1.0]}), dk, policy)
+                np.testing.assert_array_equal(
+                    dk.__dict__["_reforcexy_prediction_produced"], [False]
+                )
+                self.assertIsNot(dk.__dict__["_reforcexy_prediction_produced"], produced)
+                dk.do_predict = np.ones(2, dtype=int)
+                model.rl_model_predict(pd.DataFrame({"f": [np.nan, 1.0]}), dk, policy)
+                np.testing.assert_array_equal(
+                    dk.__dict__["_reforcexy_prediction_produced"], [False, False]
+                )
+                model.CONV_WIDTH = 0
+                dk.do_predict = np.ones(1, dtype=int)
+                result = model.rl_model_predict(pd.DataFrame({"f": [1.0]}), dk, policy)
+                self.assertTrue(result["&-action"].isna().all())
+                np.testing.assert_array_equal(
+                    dk.__dict__["_reforcexy_prediction_produced"], [False]
+                )
+                self.assertEqual(len(policy.observations), sum(expected))
+
     def test_live_mask_uses_open_position_without_state_features(self):
         model = self.model()
         policy = RecordingPolicy()
@@ -567,6 +678,9 @@ class ReviewContractsTest(QaTestCase):
         )
         np.testing.assert_array_equal(prediction["&-action"].iloc[1:], [1, 1, 1])
         np.testing.assert_array_equal(dk.do_predict, [0, 0, 0, 1])
+        np.testing.assert_array_equal(
+            dk.__dict__["_reforcexy_prediction_produced"], [False, True, True, True]
+        )
         self.assertTrue(policy.masks[1][1])
         self.assertTrue(policy.masks[2][1])
         np.testing.assert_array_equal(policy.observations[1], [[[20.0], [30.0]]])
