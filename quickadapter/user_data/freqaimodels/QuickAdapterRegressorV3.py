@@ -2342,10 +2342,13 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         digest.update(json.dumps(columns).encode())
         try:
             values = pd.util.hash_pandas_object(prepared, index=False).to_numpy()
-        except (TypeError, ValueError):
+        except (TypeError, ValueError) as error:
             logger.warning(
-                "[%s] Backtest inputs contain unhashable values; using a fresh cache namespace",
+                "[%s] Backtest cache reuse disabled: cannot fingerprint inputs (%s: %s); "
+                "using a fresh cache namespace",
                 pair,
+                type(error).__name__,
+                error,
             )
             digest.update(uuid4().bytes)
         else:
@@ -2363,8 +2366,20 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         root = dk.get_full_models_path(self.config)
         namespace = root / "backtesting" / fingerprint
         dates = ensure_datetime_series(prepared["date"])
-        if dates.isna().any() or not dates.is_unique or not dates.is_monotonic_increasing:
-            raise ValueError(f"[{pair}] Backtest input dates must be valid, unique and increasing")
+        if dates.isna().any():
+            raise ValueError(
+                f"[{pair}] Invalid backtest input dates: "
+                f"{dates.isna().sum()} missing or invalid timestamps"
+            )
+        if not dates.is_unique:
+            raise ValueError(
+                f"[{pair}] Invalid backtest input dates: "
+                f"{dates.duplicated().sum()} duplicate timestamps"
+            )
+        if not dates.is_monotonic_increasing:
+            raise ValueError(
+                f"[{pair}] Invalid backtest input dates: timestamps must be in chronological order"
+            )
         calendar = pd.DatetimeIndex(dates)
         windows = {
             training.stopts: prediction
@@ -2452,8 +2467,16 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         ) -> pd.DataFrame:
             result = append(predictions, status, backtest)
             produced = current.__dict__.get("_quickadapter_prediction_produced")
-            if produced is None or len(produced) != len(result):
-                raise ValueError(f"[{pair}] Missing or misaligned prediction provenance")
+            if produced is None:
+                raise ValueError(
+                    f"[{pair}] Missing _quickadapter_prediction_produced for backtest "
+                    f"predictions: expected {len(result)} rows"
+                )
+            if len(produced) != len(result):
+                raise ValueError(
+                    f"[{pair}] Backtest prediction provenance length mismatch: "
+                    f"expected {len(result)} rows, got {len(produced)}"
+                )
             result[_PRODUCED_PREDICTION_COLUMN] = produced
             if "holdout_rmse" not in result:
                 result["holdout_rmse"] = np.nan
@@ -4072,8 +4095,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         remaining = fit_live_predictions_candles - len(calibration_history)
         warmed_up = remaining <= 0
         if not warmed_up:
-            logger.warning(
-                f"[{pair}] Fit live predictions not warmed up: {remaining} produced observations until warmup completion"
+            logger.debug(
+                "[%s] Fit live predictions not warmed up: %s produced observations "
+                "until warmup completion",
+                pair,
+                remaining,
             )
         pred_df = calibration_history.tail(fit_live_predictions_candles).reset_index(drop=True)
 
