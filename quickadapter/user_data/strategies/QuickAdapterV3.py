@@ -2568,13 +2568,17 @@ class QuickAdapterV3(IStrategy):
         leverage = self.config.get("leverage")
         if leverage is None:
             return None
-        if not is_finite_number(leverage):
+        try:
+            converted = float(leverage) if is_finite_number(leverage) else None
+        except (TypeError, ValueError, OverflowError):
+            converted = None
+        if converted is None or not np.isfinite(converted):
             logger.warning(
                 f"Invalid leverage value {leverage!r}: must be a finite number, "
                 "using proposed_leverage"
             )
             return None
-        leverage = float(leverage)
+        leverage = converted
         if leverage < 1.0:
             logger.warning(f"Invalid leverage value {leverage}: must be >= 1.0, clamping to 1.0")
         return leverage

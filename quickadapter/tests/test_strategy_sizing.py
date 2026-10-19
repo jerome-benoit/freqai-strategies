@@ -194,6 +194,7 @@ class RuntimeSizingTest(QaTestCase):
         config = model_config(
             directory,
             runmode=RunMode.BACKTEST,
+            trading_mode="futures",
             exit_pricing={
                 "trade_natr_method": "quantile_interpolation",
                 "final_take_profit_retracement_fraction": 0.25,
@@ -226,6 +227,12 @@ class RuntimeSizingTest(QaTestCase):
                 amount_to_contract_precision=lambda pair, amount: amount,
             ),
         )
+
+    def test_sizing_fixture_requests_backtest_and_futures_explicitly(self):
+        self.assertEqual(self.model.config["runmode"], RunMode.BACKTEST)
+        self.assertEqual(self.model.config["trading_mode"], "futures")
+        self.assertFalse(self.model.is_trade_runmode)
+        self.assertTrue(self.model.can_short)
 
     def position(self, short=False, exit_stage=0):
         position = Trade(

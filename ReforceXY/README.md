@@ -91,6 +91,11 @@ volume, calendar and raw OHLC features, but does not implement a period-dependen
 `freqai.feature_parameters.indicator_periods_candles=[8,16,32]` therefore adds
 no period-dependent indicators.
 
+Close log returns require finite, strictly positive closes. An invalid close and
+the following candle have NaN returns; returns resume after two consecutive valid
+closes. Prices, rows and volume remain unchanged. Native feature filtering removes
+affected training rows and invalidates affected prediction windows.
+
 Explicit configuration overrides schema defaults and constructor fallbacks. The
 tables distinguish those defaults and requirements from the supplied profile;
 inspect normalized startup logs. Set `test_size`
@@ -253,6 +258,11 @@ including rows in partly marked histories, can count when their nonzero,
 nonexpired prediction status distinguishes them from bootstrap; zero-status rows
 remain excluded because bootstrap and rejected predictions cannot be
 distinguished. Explicit false markers remain excluded.
+Real policy outputs count even when their prediction status is rejected, including
+genuine neutral actions. Neutral placeholders without policy inference, expired
+outputs and skipped candles do not count. New metadata fields added to restored
+history remain NaN for earlier candles; current metadata never backfills the past.
+These unknown historical values survive restart initialization.
 On duplicate candle dates, a provable prediction takes precedence over an
 ambiguous close-bearing legacy row during history restoration.
 Rows with an invalid `date_pred` are discarded with a per-pair warning and the

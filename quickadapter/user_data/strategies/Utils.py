@@ -5235,7 +5235,7 @@ class _OptunaNamespaces(NamedTuple):
 # underscore on the instance (the class ``_OptunaNamespaces`` stays private).
 _OPTUNA_NAMESPACES: Final[_OptunaNamespaces] = _OptunaNamespaces()
 _OPTUNA_BEST_PARAMS_QUARANTINE_TAG: Final[str] = "corrupt"
-_OPTUNA_BEST_PARAMS_QUARANTINE_TIE_BREAK_LIMIT: Final[int] = 8
+_OPTUNA_BEST_PARAMS_QUARANTINE_TIE_BREAK_LIMIT: Final[int] = 99
 
 
 def _optuna_best_params_path(base_path: Path, pair: str, namespace: OptunaNamespace) -> Path:

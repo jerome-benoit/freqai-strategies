@@ -516,7 +516,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         ValueError,
         json.JSONDecodeError,
     )
-    _OPTUNA_JOURNAL_QUARANTINE_TIE_BREAK_LIMIT: Final[int] = 8
+    _OPTUNA_JOURNAL_QUARANTINE_TIE_BREAK_LIMIT: Final[int] = 99
     _OPTUNA_JOURNAL_OP_CODE_KEY: Final[str] = "op_code"
     _OPTUNA_JOURNAL_OPERATION_CODES: Final[frozenset[int]] = frozenset(range(10))
     _OPTUNA_JOURNAL_TAIL_PROBE_BYTES: Final[int] = 65536
@@ -2223,7 +2223,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             missing = history.set_index("date_pred").isna()
             original_initial(pair, predictions, frame)
             result = current.historic_predictions[pair]
-            old_missing = missing.reindex(pd.DatetimeIndex(result["date_pred"])).fillna(False)
+            old_missing = missing.reindex(pd.DatetimeIndex(result["date_pred"]), fill_value=False)
             old_missing.index = result.index
             result[missing.columns] = result[missing.columns].mask(old_missing)
             added = ~result["date_pred"].isin(missing.index)

@@ -295,6 +295,11 @@ and the [FreqAI parameter reference][freqai-parameters].
 | -------- | ------------------- | ------------------------- | ------------------------------------------------------- |
 | leverage | `proposed_leverage` | float [1.0, max_leverage] | Leverage. Fallback to `proposed_leverage` for the pair. |
 
+Configured leverage must be numeric, finite and representable as a float.
+Strings, booleans, nonfinite values and conversion overflow log a warning and use
+the callback's `proposed_leverage`. Missing or null values also use that proposal.
+The effective leverage is clamped to `[1.0, max_leverage]`, including proposal fallbacks.
+
 ### Exit pricing
 
 | Path                                                           | Runtime fallback       | Type / Range                                                        | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |

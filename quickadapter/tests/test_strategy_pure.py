@@ -33,6 +33,35 @@ def state(**overrides):
     return base
 
 
+class LeverageTest(QaTestCase):
+    def _leverage(self, strategy, proposal=3.0, maximum=10.0):
+        return strategy.leverage("BTC/USDT", CANDLE, 100.0, proposal, maximum, None, "long")
+
+    def test_unrepresentable_integer_warns_and_keeps_proposal_fallback_per_call(self):
+        strategy = QuickAdapterV3.__new__(QuickAdapterV3)
+        strategy.config = {"leverage": 10**500}
+        with self.assertLogs("QuickAdapterV3", level="WARNING"):
+            self.assertEqual(self._leverage(strategy), 3.0)
+        self.assertEqual(self._leverage(strategy, proposal=7.0, maximum=5.0), 5.0)
+
+    def test_configured_values_preserve_numeric_only_validation_and_bounds(self):
+        for value, expected in (
+            (2, 2.0),
+            (0.5, 1.0),
+            (20.0, 10.0),
+            (None, 3.0),
+            ("2", 3.0),
+            (True, 3.0),
+            (np.nan, 3.0),
+            (np.inf, 3.0),
+            (-np.inf, 3.0),
+        ):
+            with self.subTest(value=value):
+                strategy = QuickAdapterV3.__new__(QuickAdapterV3)
+                strategy.config = {"leverage": value}
+                self.assertEqual(self._leverage(strategy), expected)
+
+
 class CandleDateTest(QaTestCase):
     def test_an_iso_string_is_parsed_as_utc(self):
         self.assertEqual(QuickAdapterV3._as_utc_candle_date("2026-01-01T12:00:00+00:00"), CANDLE)

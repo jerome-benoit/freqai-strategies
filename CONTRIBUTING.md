@@ -99,10 +99,20 @@ disabled branch trace, a disabled namespace walk, a source tree that is not the
 measured one, a `fail_under` that has drifted into the inert `[run]` section, the
 source-level `no cover` or `no branch` pragmas (with or without a colon),
 ellipsis-only bodies, additional `TYPE_CHECKING` blocks beyond the existing
-import-only block, and any `omit`, `include`, `exclude_lines`, `exclude_also` or
-`partial_*` of production code. The shared `scripts/run-coverage.sh` runner is
-exercised with real passing and failing coverage reports and a failing test suite;
-the checks assert process exit status, not workflow token spelling.
+import-only block, and any `omit`, `include`, `patch`, `exclude_lines`,
+`exclude_also` or `partial_*` of production code. Both guards validate legal options
+and exact sections, reject extra measurement roots and plugins, and compare
+coverage's actual statement and branch denominators with default exclusions enabled
+and disabled. QuickAdapter permits only its existing import-only `TYPE_CHECKING`
+block; its runtime fallback remains measured. The shared `scripts/run-coverage.sh`
+runner is exercised with real passing and failing coverage reports and a failing
+test suite; checks assert process exit status, not workflow token spelling.
+
+Import guards require one registration per resolved production file. QuickAdapter
+strategy modules use bare names and its model uses a dotted name; ReforceXY uses
+dotted production names. Test modules use bare stems in both suites. QA config
+builders preserve explicit run modes, user directories and nested overrides;
+fixtures exercising futures behavior must request futures explicitly.
 
 ## Quality checks
 

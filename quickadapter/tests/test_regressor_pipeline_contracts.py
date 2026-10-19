@@ -365,18 +365,28 @@ class PredictionTransportTest(QaTestCase):
                     PAIR, pd.DataFrame({LABEL: [0.0]}), np.array([0]), kitchen, strategy
                 )
                 model.dd.save_historic_predictions_to_disk()
+                restart_strategy = pd.concat(
+                    [
+                        strategy,
+                        strategy.iloc[-1:].assign(date=dates[-1] + pd.Timedelta(minutes=5)),
+                    ],
+                    ignore_index=True,
+                )
                 restored = QuickAdapterRegressorV3(config=config)
-                restored.dd.set_initial_return_values(PAIR, pd.DataFrame({LABEL: [0.0]}), strategy)
+                restored.dd.set_initial_return_values(
+                    PAIR, pd.DataFrame({LABEL: np.zeros(4)}), restart_strategy
+                )
                 result = restored._normalise_prediction_returns(
                     restored.dd.model_return_values[PAIR]
                 )
 
-                np.testing.assert_allclose(result["holdout_rmse"], [np.nan, np.nan, 0.25])
-                np.testing.assert_allclose(result["prediction_available"], [1, 1, 1])
-                np.testing.assert_allclose(result[LABEL], [0.1, 0.0, 0.0])
+                np.testing.assert_allclose(result["holdout_rmse"], [np.nan, np.nan, 0.25, np.nan])
+                np.testing.assert_allclose(result["prediction_available"], [1, 1, 1, 0])
+                np.testing.assert_allclose(result[LABEL], [0.1, 0.0, 0.0, np.nan])
                 self.assertTrue(result["has_signal"].iloc[:2].isna().all())
-                self.assertIsInstance(result["has_signal"].iloc[-1], (bool, np.bool_))
-                self.assertEqual(result["has_signal"].iloc[-1], flag)
+                self.assertEqual(result["has_signal"].dtype, object)
+                self.assertIsInstance(result["has_signal"].iloc[2], (bool, np.bool_))
+                self.assertEqual(result["has_signal"].iloc[2], flag)
 
     def test_native_no_model_return_does_not_expose_zero_predictions(self):
         with temporary_directory() as directory:
