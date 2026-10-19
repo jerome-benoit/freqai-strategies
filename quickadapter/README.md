@@ -157,9 +157,11 @@ data, FreqAI settings, effective label parameters, strategy/model code and
 dependency versions. Changing these inputs or extending the dataset uses a
 separate cache directory. Existing artifacts remain on disk; they are not deleted.
 
-Structured inputs such as native orderflow data can prevent cache reuse. In that
-case, each run uses a fresh directory rather than reusing models or predictions.
-Repeated runs can therefore use more training time and disk space.
+Any prepared input column with pandas `object` or `category` dtype disables
+reuse, including non-feature inputs and structured orderflow data. Value hashing
+does not preserve scalar types or category metadata. Each run therefore uses a
+fresh directory, increasing training time and disk use. Plain text can use pandas
+`string` dtype to retain reuse, provided conversion preserves target semantics.
 
 Cached and fresh windows return the same predictions and prepared indicator
 columns. `freqai_backtest_live_models=true` is a separate Freqtrade mode: it
@@ -206,6 +208,10 @@ exit conditions.
 | `0`                 | No usable output: no model, bootstrap, missing inputs or history, non-finite output, downtime, model expiration or backtest padding. |
 | `NaN` / JSON `null` | Unknown provenance in an older history. Existing values are retained but do not count toward calibration.                            |
 
+Stored-live-prediction replay uses the same availability values: a candle without
+a matching history row has value `0`; an existing ambiguous legacy row remains
+unknown.
+
 Missing or infinite input features remain rejected after preprocessing;
 replacing missing inputs with zero does not make them valid. Non-finite model
 outputs are also rejected and excluded from warmup.
@@ -238,6 +244,7 @@ backfilling them with current values.
 Before FreqAI, `&s-extrema` contains the training target; after FreqAI, it contains
 the model prediction. The historical target direction and label-weight subplots
 show target construction, not forecasts.
+Raw direction and label weights use bars; their smoothed values use curves.
 
 Raw Zigzag direction is sparse (-1/0/+1). Smoothed direction can be zero outside
 the smoothing support or through cancellation. A flat series with no confirmed

@@ -2274,6 +2274,15 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             result = self._normalise_prediction_returns(result)
         return result
 
+    def start_backtesting_from_historic_predictions(
+        self, dataframe: pd.DataFrame, metadata: dict, dk: FreqaiDataKitchen
+    ) -> FreqaiDataKitchen:
+        dk = super().start_backtesting_from_historic_predictions(dataframe, metadata, dk)
+        frame = _ensure_produced_prediction_column(dk.return_dataframe)
+        provenance = frame[_PRODUCED_PREDICTION_COLUMN].mask(frame["date_pred"].isna(), False)
+        dk.return_dataframe = self._normalise_prediction_returns(frame, provenance)
+        return dk
+
     def _backtest_fingerprint(self, prepared: pd.DataFrame, pair: str, strategy: Any) -> str:
         """Bind cached predictions and models to their actual inputs and implementation."""
         digest = sha256()
@@ -2341,6 +2350,15 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         columns = [(column, str(dtype)) for column, dtype in prepared.dtypes.items()]
         digest.update(json.dumps(columns).encode())
         try:
+            unsafe = [
+                column
+                for column, dtype in prepared.dtypes.items()
+                if pd.api.types.is_object_dtype(dtype) or isinstance(dtype, pd.CategoricalDtype)
+            ]
+            if unsafe:
+                raise TypeError(
+                    f"value hashing loses scalar types or category metadata for columns {unsafe}"
+                )
             values = pd.util.hash_pandas_object(prepared, index=False).to_numpy()
         except (TypeError, ValueError) as error:
             logger.warning(

@@ -275,6 +275,59 @@ class PredictionTransportTest(QaTestCase):
             self.assertEqual([row[prediction] for row in payload["data"]][:3], [None, 0.0, 0.0])
             self.assertNotIn(_PRODUCED_PREDICTION_COLUMN, payload["columns"])
 
+    def test_historic_live_model_replay_distinguishes_missing_and_legacy_rows(self):
+        for with_marker in (False, True):
+            with self.subTest(with_marker=with_marker), temporary_directory() as directory:
+                config = model_config(directory, freqai={"optuna_hyperopt": {"enabled": False}})
+                config.update(
+                    runmode=RunMode.BACKTEST,
+                    trading_mode="spot",
+                    timerange="20240101-20240102",
+                    config_files=[str(CONFIG_TEMPLATE)],
+                    freqai_backtest_live_models=True,
+                )
+                frame = ohlcv_frame([100.0, 101.0, 102.0, 103.0])
+                frame["date"] = pd.to_datetime(frame["date"], utc=True)
+                history = pd.DataFrame(
+                    {
+                        "date_pred": frame["date"].iloc[[0, 2, 3]].to_numpy(),
+                        LABEL: [0.0, 0.5, 0.0],
+                        "do_predict": [1, 1, 0],
+                        "holdout_rmse": [0.2] * 3,
+                    }
+                )
+                if with_marker:
+                    history[_PRODUCED_PREDICTION_COLUMN] = [True, True, np.nan]
+                model = QuickAdapterRegressorV3(config=config)
+                model.dd.historic_predictions[PAIR] = history
+                model.dd.save_historic_predictions_to_disk()
+                restored = QuickAdapterRegressorV3(config=config)
+                strategy = QuickAdapterV3(config)
+                strategy.freqai = restored
+                strategy.freqai_info = config["freqai"]
+                strategy.bot_start()
+                strategy.dp = SimpleNamespace(runmode=RunMode.BACKTEST)
+
+                result = restored.start(frame, {"pair": PAIR}, strategy)
+
+                np.testing.assert_allclose(result["prediction_available"], [1, 0, 1, np.nan])
+                np.testing.assert_allclose(result[LABEL], [0.0, np.nan, 0.5, 0.0])
+                np.testing.assert_allclose(result["holdout_rmse"], [0.2, np.nan, 0.2, 0.2])
+                np.testing.assert_allclose(result["do_predict"], [1, np.nan, 1, 0])
+                pd.testing.assert_frame_equal(restored.dd.historic_predictions[PAIR], history)
+                payload = RPC._convert_dataframe_to_dict(
+                    "QuickAdapterV3",
+                    PAIR,
+                    "5m",
+                    result,
+                    frame["date"].iloc[-1].to_pydatetime(),
+                    None,
+                    [],
+                )
+                availability = payload["columns"].index("prediction_available")
+                self.assertEqual([row[availability] for row in payload["data"]], [1, 0, 1, None])
+                self.assertNotIn(_PRODUCED_PREDICTION_COLUMN, payload["columns"])
+
     def test_old_history_accepts_new_metrics_without_fabricating_past_scores(self):
         for flag in (True, False, np.bool_(True), np.bool_(False)):
             with self.subTest(flag=flag), temporary_directory() as directory:
@@ -417,6 +470,13 @@ class PredictionTransportTest(QaTestCase):
             np.testing.assert_allclose(traces[LABEL].y, [0, np.nan, 0, np.nan, 0.5])
             np.testing.assert_allclose(traces["holdout_rmse"].y, [0, np.nan, np.nan, np.nan, 0.25])
             np.testing.assert_array_equal(traces["extrema_direction_smoothed"].y, [0] * 5)
+            self.assertEqual(traces[LABEL].type, "scatter")
+            self.assertEqual(traces[LABEL].mode, "lines")
+            self.assertEqual(traces["holdout_rmse"].mode, "lines")
+            self.assertEqual(traces["extrema_direction_smoothed"].mode, "lines")
+            self.assertEqual(traces["extrema_weight_smoothed"].mode, "lines")
+            self.assertEqual(traces["extrema_direction"].type, "bar")
+            self.assertEqual(traces["extrema_weight"].type, "bar")
 
 
 class BacktestContractsTest(QaTestCase):
@@ -669,6 +729,7 @@ class BacktestContractsTest(QaTestCase):
                 100 + 8 * np.sin(np.arange(720) / 6) + 2 * np.sin(np.arange(720) / 23)
             )
             frame["funding_rate"] = 1.0
+            frame["sentiment"] = pd.Series(["neutral"] * len(frame), dtype="string")
             options = {"strategy_name": "FundingStrategy", "strategy_path": implementations}
             first = self._run_backtest(directory / "shared", frame, **options)
             frame["funding_rate"] = -1.0
@@ -686,6 +747,60 @@ class BacktestContractsTest(QaTestCase):
                     first.return_dataframe[LABEL], fresh.return_dataframe[LABEL], equal_nan=True
                 )
             )
+
+    def test_typed_target_inputs_cannot_reuse_lossy_prediction_identities(self):
+        with temporary_directory() as directory:
+            implementations = directory / "implementations"
+            implementations.mkdir()
+            (implementations / "sentiment_strategy.py").write_text(
+                "import pandas as pd\n"
+                "from QuickAdapterV3 import QuickAdapterV3\n"
+                "class SentimentStrategy(QuickAdapterV3):\n"
+                "    def set_freqai_targets(self, dataframe, metadata, **kwargs):\n"
+                "        result = super().set_freqai_targets(dataframe, metadata, **kwargs)\n"
+                "        sentiment = result['sentiment']\n"
+                "        if isinstance(sentiment.dtype, pd.CategoricalDtype):\n"
+                "            direction = 2.0 * sentiment.cat.codes - 1.0\n"
+                "        else:\n"
+                "            direction = sentiment.map(lambda value: 1.0 if isinstance(value, int) else -1.0)\n"
+                "        result['&s-extrema'] *= direction\n"
+                "        return result\n"
+            )
+            options = {"strategy_name": "SentimentStrategy", "strategy_path": implementations}
+            for kind in ("object", "category"):
+                with self.subTest(kind=kind):
+                    frame = ohlcv_frame(
+                        100 + 8 * np.sin(np.arange(720) / 6) + 2 * np.sin(np.arange(720) / 23)
+                    )
+                    values = [1 if index % 2 == 0 else "neutral" for index in range(len(frame))]
+                    frame["sentiment"] = pd.Series(values, dtype=object)
+                    changed = frame.copy()
+                    if kind == "object":
+                        changed["sentiment"] = frame["sentiment"].map(str).astype(object)
+                    else:
+                        frame["sentiment"] = pd.Categorical(
+                            values, categories=[1, "neutral"], ordered=True
+                        )
+                        changed["sentiment"] = frame["sentiment"].cat.reorder_categories(
+                            ["neutral", 1]
+                        )
+
+                    first = self._run_backtest(directory / kind / "shared", frame, **options)
+                    reused = self._run_backtest(directory / kind / "shared", changed, **options)
+                    fresh = self._run_backtest(directory / kind / "fresh", changed, **options)
+                    repeated = self._run_backtest(directory / kind / "shared", changed, **options)
+
+                    self.assertNotEqual(first.data_path.parent, reused.data_path.parent)
+                    pd.testing.assert_frame_equal(reused.return_dataframe, fresh.return_dataframe)
+                    self.assertNotEqual(reused.data_path.parent, repeated.data_path.parent)
+                    pd.testing.assert_frame_equal(repeated.return_dataframe, fresh.return_dataframe)
+                    self.assertFalse(
+                        np.allclose(
+                            first.return_dataframe[LABEL],
+                            fresh.return_dataframe[LABEL],
+                            equal_nan=True,
+                        )
+                    )
 
     def test_native_orderflow_structures_use_isolated_backtest_namespaces(self):
         with temporary_directory() as directory:
