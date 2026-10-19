@@ -13,733 +13,733 @@
     },
     {
       "endCharacter": 79,
-      "endLine": 2805,
+      "endLine": 2808,
       "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
       "message": "Cannot access attribute \"index\" for class \"NDArray[Unknown]\"\n  Attribute \"index\" is unknown",
       "rule": "reportAttributeAccessIssue",
       "severity": "error",
       "startCharacter": 74,
-      "startLine": 2805
+      "startLine": 2808
     },
     {
       "endCharacter": 72,
-      "endLine": 2807,
+      "endLine": 2810,
       "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
       "message": "Cannot access attribute \"index\" for class \"NDArray[Unknown]\"\n  Attribute \"index\" is unknown",
       "rule": "reportAttributeAccessIssue",
       "severity": "error",
       "startCharacter": 67,
-      "startLine": 2807
+      "startLine": 2810
     },
     {
       "endCharacter": 90,
-      "endLine": 2816,
+      "endLine": 2819,
       "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
       "message": "Cannot access attribute \"index\" for class \"NDArray[Unknown]\"\n  Attribute \"index\" is unknown",
       "rule": "reportAttributeAccessIssue",
       "severity": "error",
       "startCharacter": 85,
-      "startLine": 2816
+      "startLine": 2819
     },
     {
       "endCharacter": 34,
-      "endLine": 2828,
+      "endLine": 2831,
       "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
       "message": "Argument of type \"Unknown | NDArray[Unknown] | Any | list[Unknown]\" cannot be assigned to parameter \"train_features\" of type \"DataFrame\" in function \"_filter_train_by_mask\"\n  Type \"Unknown | NDArray[Unknown] | Any | list[Unknown]\" is not assignable to type \"DataFrame\"\n    \"list[Unknown]\" is not assignable to \"DataFrame\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 20,
-      "startLine": 2828
+      "startLine": 2831
     },
     {
       "endCharacter": 32,
-      "endLine": 2829,
+      "endLine": 2832,
       "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
       "message": "Argument of type \"Unknown | NDArray[Unknown] | Any | list[Unknown]\" cannot be assigned to parameter \"train_labels\" of type \"DataFrame\" in function \"_filter_train_by_mask\"\n  Type \"Unknown | NDArray[Unknown] | Any | list[Unknown]\" is not assignable to type \"DataFrame\"\n    \"list[Unknown]\" is not assignable to \"DataFrame\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 20,
-      "startLine": 2829
+      "startLine": 2832
     },
     {
       "endCharacter": 38,
-      "endLine": 2830,
+      "endLine": 2833,
       "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
       "message": "Argument of type \"Unknown | NDArray[Unknown] | Any | list[Unknown]\" cannot be assigned to parameter \"train_weights\" of type \"NDArray[floating[Any]]\" in function \"_filter_train_by_mask\"\n  Type \"Unknown | NDArray[Unknown] | Any | list[Unknown]\" is not assignable to type \"NDArray[floating[Any]]\"\n    \"list[Unknown]\" is not assignable to \"ndarray[_AnyShape, dtype[floating[Any]]]\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 20,
-      "startLine": 2830
+      "startLine": 2833
     },
     {
       "endCharacter": 59,
-      "endLine": 2833,
+      "endLine": 2836,
       "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
       "message": "Argument of type \"Unknown | NDArray[Unknown] | Any | list[Unknown] | None\" cannot be assigned to parameter \"train_label_weights\" of type \"NDArray[floating[Any]] | None\" in function \"_filter_train_by_mask\"\n  Type \"Unknown | NDArray[Unknown] | Any | list[Unknown] | None\" is not assignable to type \"NDArray[floating[Any]] | None\"\n    Type \"list[Unknown]\" is not assignable to type \"NDArray[floating[Any]] | None\"\n      \"list[Unknown]\" is not assignable to \"ndarray[_AnyShape, dtype[floating[Any]]]\"\n      \"list[Unknown]\" is not assignable to \"None\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 40,
-      "startLine": 2833
+      "startLine": 2836
     },
     {
       "endCharacter": 34,
-      "endLine": 2867,
-      "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
-      "message": "Argument of type \"DataFrame | Unknown | NDArray[Unknown] | Any | list[Unknown]\" cannot be assigned to parameter \"features\" of type \"DataFrame\" in function \"_shuffle_split_rows\"\n  Type \"DataFrame | Unknown | NDArray[Unknown] | Any | list[Unknown]\" is not assignable to type \"DataFrame\"\n    \"list[Unknown]\" is not assignable to \"DataFrame\"",
-      "rule": "reportArgumentType",
-      "severity": "error",
-      "startCharacter": 20,
-      "startLine": 2867
-    },
-    {
-      "endCharacter": 32,
-      "endLine": 2868,
-      "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
-      "message": "Argument of type \"DataFrame | Unknown | NDArray[Unknown] | Any | list[Unknown]\" cannot be assigned to parameter \"labels\" of type \"DataFrame\" in function \"_shuffle_split_rows\"\n  Type \"DataFrame | Unknown | NDArray[Unknown] | Any | list[Unknown]\" is not assignable to type \"DataFrame\"\n    \"list[Unknown]\" is not assignable to \"DataFrame\"",
-      "rule": "reportArgumentType",
-      "severity": "error",
-      "startCharacter": 20,
-      "startLine": 2868
-    },
-    {
-      "endCharacter": 38,
-      "endLine": 2869,
-      "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
-      "message": "Argument of type \"NDArray[floating[Any]] | Unknown | NDArray[Unknown] | Any | list[Unknown]\" cannot be assigned to parameter \"base_weights\" of type \"NDArray[floating[Any]]\" in function \"_shuffle_split_rows\"\n  Type \"NDArray[floating[Any]] | Unknown | NDArray[Unknown] | Any | list[Unknown]\" is not assignable to type \"NDArray[floating[Any]]\"\n    \"list[Unknown]\" is not assignable to \"ndarray[_AnyShape, dtype[floating[Any]]]\"",
-      "rule": "reportArgumentType",
-      "severity": "error",
-      "startCharacter": 20,
-      "startLine": 2869
-    },
-    {
-      "endCharacter": 39,
       "endLine": 2870,
       "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
-      "message": "Argument of type \"NDArray[floating[Any]] | Unknown | NDArray[Unknown] | Any | list[Unknown] | None\" cannot be assigned to parameter \"label_weights\" of type \"NDArray[floating[Any]] | None\" in function \"_shuffle_split_rows\"\n  Type \"NDArray[floating[Any]] | Unknown | NDArray[Unknown] | Any | list[Unknown] | None\" is not assignable to type \"NDArray[floating[Any]] | None\"\n    Type \"list[Unknown]\" is not assignable to type \"NDArray[floating[Any]] | None\"\n      \"list[Unknown]\" is not assignable to \"ndarray[_AnyShape, dtype[floating[Any]]]\"\n      \"list[Unknown]\" is not assignable to \"None\"",
+      "message": "Argument of type \"DataFrame | Unknown | NDArray[Unknown] | Any | list[Unknown]\" cannot be assigned to parameter \"features\" of type \"DataFrame\" in function \"_shuffle_split_rows\"\n  Type \"DataFrame | Unknown | NDArray[Unknown] | Any | list[Unknown]\" is not assignable to type \"DataFrame\"\n    \"list[Unknown]\" is not assignable to \"DataFrame\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 20,
       "startLine": 2870
     },
     {
+      "endCharacter": 32,
+      "endLine": 2871,
+      "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
+      "message": "Argument of type \"DataFrame | Unknown | NDArray[Unknown] | Any | list[Unknown]\" cannot be assigned to parameter \"labels\" of type \"DataFrame\" in function \"_shuffle_split_rows\"\n  Type \"DataFrame | Unknown | NDArray[Unknown] | Any | list[Unknown]\" is not assignable to type \"DataFrame\"\n    \"list[Unknown]\" is not assignable to \"DataFrame\"",
+      "rule": "reportArgumentType",
+      "severity": "error",
+      "startCharacter": 20,
+      "startLine": 2871
+    },
+    {
+      "endCharacter": 38,
+      "endLine": 2872,
+      "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
+      "message": "Argument of type \"NDArray[floating[Any]] | Unknown | NDArray[Unknown] | Any | list[Unknown]\" cannot be assigned to parameter \"base_weights\" of type \"NDArray[floating[Any]]\" in function \"_shuffle_split_rows\"\n  Type \"NDArray[floating[Any]] | Unknown | NDArray[Unknown] | Any | list[Unknown]\" is not assignable to type \"NDArray[floating[Any]]\"\n    \"list[Unknown]\" is not assignable to \"ndarray[_AnyShape, dtype[floating[Any]]]\"",
+      "rule": "reportArgumentType",
+      "severity": "error",
+      "startCharacter": 20,
+      "startLine": 2872
+    },
+    {
+      "endCharacter": 39,
+      "endLine": 2873,
+      "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
+      "message": "Argument of type \"NDArray[floating[Any]] | Unknown | NDArray[Unknown] | Any | list[Unknown] | None\" cannot be assigned to parameter \"label_weights\" of type \"NDArray[floating[Any]] | None\" in function \"_shuffle_split_rows\"\n  Type \"NDArray[floating[Any]] | Unknown | NDArray[Unknown] | Any | list[Unknown] | None\" is not assignable to type \"NDArray[floating[Any]] | None\"\n    Type \"list[Unknown]\" is not assignable to type \"NDArray[floating[Any]] | None\"\n      \"list[Unknown]\" is not assignable to \"ndarray[_AnyShape, dtype[floating[Any]]]\"\n      \"list[Unknown]\" is not assignable to \"None\"",
+      "rule": "reportArgumentType",
+      "severity": "error",
+      "startCharacter": 20,
+      "startLine": 2873
+    },
+    {
       "endCharacter": 37,
-      "endLine": 2877,
-      "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
-      "message": "Argument of type \"Unknown | NDArray[Unknown] | Any | list[Unknown] | DataFrame\" cannot be assigned to parameter \"features\" of type \"DataFrame\" in function \"_shuffle_split_rows\"\n  Type \"Unknown | NDArray[Unknown] | Any | list[Unknown] | DataFrame\" is not assignable to type \"DataFrame\"\n    \"list[Unknown]\" is not assignable to \"DataFrame\"",
-      "rule": "reportArgumentType",
-      "severity": "error",
-      "startCharacter": 24,
-      "startLine": 2877
-    },
-    {
-      "endCharacter": 35,
-      "endLine": 2878,
-      "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
-      "message": "Argument of type \"Unknown | NDArray[Unknown] | Any | list[Unknown] | DataFrame\" cannot be assigned to parameter \"labels\" of type \"DataFrame\" in function \"_shuffle_split_rows\"\n  Type \"Unknown | NDArray[Unknown] | Any | list[Unknown] | DataFrame\" is not assignable to type \"DataFrame\"\n    \"list[Unknown]\" is not assignable to \"DataFrame\"",
-      "rule": "reportArgumentType",
-      "severity": "error",
-      "startCharacter": 24,
-      "startLine": 2878
-    },
-    {
-      "endCharacter": 41,
-      "endLine": 2879,
-      "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
-      "message": "Argument of type \"Unknown | NDArray[Unknown] | Any | list[Unknown] | ndarray[_AnyShape, dtype[floating[Any]]]\" cannot be assigned to parameter \"base_weights\" of type \"NDArray[floating[Any]]\" in function \"_shuffle_split_rows\"\n  Type \"Unknown | NDArray[Unknown] | Any | list[Unknown] | ndarray[_AnyShape, dtype[floating[Any]]]\" is not assignable to type \"NDArray[floating[Any]]\"\n    \"list[Unknown]\" is not assignable to \"ndarray[_AnyShape, dtype[floating[Any]]]\"",
-      "rule": "reportArgumentType",
-      "severity": "error",
-      "startCharacter": 24,
-      "startLine": 2879
-    },
-    {
-      "endCharacter": 42,
       "endLine": 2880,
       "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
-      "message": "Argument of type \"Unknown | NDArray[Unknown] | Any | list[Unknown] | ndarray[_AnyShape, dtype[floating[Any]]] | None\" cannot be assigned to parameter \"label_weights\" of type \"NDArray[floating[Any]] | None\" in function \"_shuffle_split_rows\"\n  Type \"Unknown | NDArray[Unknown] | Any | list[Unknown] | ndarray[_AnyShape, dtype[floating[Any]]] | None\" is not assignable to type \"NDArray[floating[Any]] | None\"\n    Type \"list[Unknown]\" is not assignable to type \"NDArray[floating[Any]] | None\"\n      \"list[Unknown]\" is not assignable to \"ndarray[_AnyShape, dtype[floating[Any]]]\"\n      \"list[Unknown]\" is not assignable to \"None\"",
+      "message": "Argument of type \"Unknown | NDArray[Unknown] | Any | list[Unknown] | DataFrame\" cannot be assigned to parameter \"features\" of type \"DataFrame\" in function \"_shuffle_split_rows\"\n  Type \"Unknown | NDArray[Unknown] | Any | list[Unknown] | DataFrame\" is not assignable to type \"DataFrame\"\n    \"list[Unknown]\" is not assignable to \"DataFrame\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 24,
       "startLine": 2880
     },
     {
+      "endCharacter": 35,
+      "endLine": 2881,
+      "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
+      "message": "Argument of type \"Unknown | NDArray[Unknown] | Any | list[Unknown] | DataFrame\" cannot be assigned to parameter \"labels\" of type \"DataFrame\" in function \"_shuffle_split_rows\"\n  Type \"Unknown | NDArray[Unknown] | Any | list[Unknown] | DataFrame\" is not assignable to type \"DataFrame\"\n    \"list[Unknown]\" is not assignable to \"DataFrame\"",
+      "rule": "reportArgumentType",
+      "severity": "error",
+      "startCharacter": 24,
+      "startLine": 2881
+    },
+    {
+      "endCharacter": 41,
+      "endLine": 2882,
+      "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
+      "message": "Argument of type \"Unknown | NDArray[Unknown] | Any | list[Unknown] | ndarray[_AnyShape, dtype[floating[Any]]]\" cannot be assigned to parameter \"base_weights\" of type \"NDArray[floating[Any]]\" in function \"_shuffle_split_rows\"\n  Type \"Unknown | NDArray[Unknown] | Any | list[Unknown] | ndarray[_AnyShape, dtype[floating[Any]]]\" is not assignable to type \"NDArray[floating[Any]]\"\n    \"list[Unknown]\" is not assignable to \"ndarray[_AnyShape, dtype[floating[Any]]]\"",
+      "rule": "reportArgumentType",
+      "severity": "error",
+      "startCharacter": 24,
+      "startLine": 2882
+    },
+    {
+      "endCharacter": 42,
+      "endLine": 2883,
+      "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
+      "message": "Argument of type \"Unknown | NDArray[Unknown] | Any | list[Unknown] | ndarray[_AnyShape, dtype[floating[Any]]] | None\" cannot be assigned to parameter \"label_weights\" of type \"NDArray[floating[Any]] | None\" in function \"_shuffle_split_rows\"\n  Type \"Unknown | NDArray[Unknown] | Any | list[Unknown] | ndarray[_AnyShape, dtype[floating[Any]]] | None\" is not assignable to type \"NDArray[floating[Any]] | None\"\n    Type \"list[Unknown]\" is not assignable to type \"NDArray[floating[Any]] | None\"\n      \"list[Unknown]\" is not assignable to \"ndarray[_AnyShape, dtype[floating[Any]]]\"\n      \"list[Unknown]\" is not assignable to \"None\"",
+      "rule": "reportArgumentType",
+      "severity": "error",
+      "startCharacter": 24,
+      "startLine": 2883
+    },
+    {
       "endCharacter": 30,
-      "endLine": 2898,
+      "endLine": 2901,
       "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
       "message": "Argument of type \"NDArray[floating[Any]] | Unknown | NDArray[Unknown] | Any | list[Unknown]\" cannot be assigned to parameter \"base_weights\" of type \"NDArray[floating[Any]]\" in function \"_compose_train_weights_with_support\"\n  Type \"NDArray[floating[Any]] | Unknown | NDArray[Unknown] | Any | list[Unknown]\" is not assignable to type \"NDArray[floating[Any]]\"\n    \"list[Unknown]\" is not assignable to \"ndarray[_AnyShape, dtype[floating[Any]]]\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 12,
-      "startLine": 2898
+      "startLine": 2901
     },
     {
       "endCharacter": 31,
-      "endLine": 2899,
+      "endLine": 2902,
       "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
       "message": "Argument of type \"NDArray[floating[Any]] | Unknown | NDArray[Unknown] | Any | list[Unknown] | None\" cannot be assigned to parameter \"label_weights\" of type \"NDArray[floating[Any]] | None\" in function \"_compose_train_weights_with_support\"\n  Type \"NDArray[floating[Any]] | Unknown | NDArray[Unknown] | Any | list[Unknown] | None\" is not assignable to type \"NDArray[floating[Any]] | None\"\n    Type \"list[Unknown]\" is not assignable to type \"NDArray[floating[Any]] | None\"\n      \"list[Unknown]\" is not assignable to \"ndarray[_AnyShape, dtype[floating[Any]]]\"\n      \"list[Unknown]\" is not assignable to \"None\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 12,
-      "startLine": 2899
+      "startLine": 2902
     },
     {
       "endCharacter": 33,
-      "endLine": 2905,
+      "endLine": 2908,
       "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
       "message": "Argument of type \"NDArray[floating[Any]] | Unknown | NDArray[Unknown] | Any | list[Unknown]\" cannot be assigned to parameter \"base_weights\" of type \"NDArray[floating[Any]]\" in function \"_compose_eval_weights\"\n  Type \"NDArray[floating[Any]] | Unknown | NDArray[Unknown] | Any | list[Unknown]\" is not assignable to type \"NDArray[floating[Any]]\"\n    \"list[Unknown]\" is not assignable to \"ndarray[_AnyShape, dtype[floating[Any]]]\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 16,
-      "startLine": 2905
+      "startLine": 2908
     },
     {
       "endCharacter": 34,
-      "endLine": 2906,
+      "endLine": 2909,
       "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
       "message": "Argument of type \"NDArray[floating[Any]] | Unknown | NDArray[Unknown] | Any | list[Unknown] | None\" cannot be assigned to parameter \"label_weights\" of type \"NDArray[floating[Any]] | None\" in function \"_compose_eval_weights\"\n  Type \"NDArray[floating[Any]] | Unknown | NDArray[Unknown] | Any | list[Unknown] | None\" is not assignable to type \"NDArray[floating[Any]] | None\"\n    Type \"list[Unknown]\" is not assignable to type \"NDArray[floating[Any]] | None\"\n      \"list[Unknown]\" is not assignable to \"ndarray[_AnyShape, dtype[floating[Any]]]\"\n      \"list[Unknown]\" is not assignable to \"None\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 16,
-      "startLine": 2906
+      "startLine": 2909
     },
     {
       "endCharacter": 26,
-      "endLine": 2913,
-      "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
-      "message": "Argument of type \"DataFrame | Unknown | NDArray[Unknown] | Any | list[Unknown]\" cannot be assigned to parameter \"train_df\" of type \"DataFrame\" in function \"build_data_dictionary\"\n  Type \"DataFrame | Unknown | NDArray[Unknown] | Any | list[Unknown]\" is not assignable to type \"DataFrame\"\n    \"list[Unknown]\" is not assignable to \"DataFrame\"",
-      "rule": "reportArgumentType",
-      "severity": "error",
-      "startCharacter": 12,
-      "startLine": 2913
-    },
-    {
-      "endCharacter": 25,
-      "endLine": 2914,
-      "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
-      "message": "Argument of type \"DataFrame | Unknown | NDArray[Unknown] | Any | list[Unknown]\" cannot be assigned to parameter \"test_df\" of type \"DataFrame\" in function \"build_data_dictionary\"\n  Type \"DataFrame | Unknown | NDArray[Unknown] | Any | list[Unknown]\" is not assignable to type \"DataFrame\"\n    \"list[Unknown]\" is not assignable to \"DataFrame\"",
-      "rule": "reportArgumentType",
-      "severity": "error",
-      "startCharacter": 12,
-      "startLine": 2914
-    },
-    {
-      "endCharacter": 24,
-      "endLine": 2915,
-      "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
-      "message": "Argument of type \"DataFrame | Unknown | NDArray[Unknown] | Any | list[Unknown]\" cannot be assigned to parameter \"train_labels\" of type \"DataFrame\" in function \"build_data_dictionary\"\n  Type \"DataFrame | Unknown | NDArray[Unknown] | Any | list[Unknown]\" is not assignable to type \"DataFrame\"\n    \"list[Unknown]\" is not assignable to \"DataFrame\"",
-      "rule": "reportArgumentType",
-      "severity": "error",
-      "startCharacter": 12,
-      "startLine": 2915
-    },
-    {
-      "endCharacter": 23,
       "endLine": 2916,
       "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
-      "message": "Argument of type \"DataFrame | Unknown | NDArray[Unknown] | Any | list[Unknown]\" cannot be assigned to parameter \"test_labels\" of type \"DataFrame\" in function \"build_data_dictionary\"\n  Type \"DataFrame | Unknown | NDArray[Unknown] | Any | list[Unknown]\" is not assignable to type \"DataFrame\"\n    \"list[Unknown]\" is not assignable to \"DataFrame\"",
+      "message": "Argument of type \"DataFrame | Unknown | NDArray[Unknown] | Any | list[Unknown]\" cannot be assigned to parameter \"train_df\" of type \"DataFrame\" in function \"build_data_dictionary\"\n  Type \"DataFrame | Unknown | NDArray[Unknown] | Any | list[Unknown]\" is not assignable to type \"DataFrame\"\n    \"list[Unknown]\" is not assignable to \"DataFrame\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 12,
       "startLine": 2916
     },
     {
+      "endCharacter": 25,
+      "endLine": 2917,
+      "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
+      "message": "Argument of type \"DataFrame | Unknown | NDArray[Unknown] | Any | list[Unknown]\" cannot be assigned to parameter \"test_df\" of type \"DataFrame\" in function \"build_data_dictionary\"\n  Type \"DataFrame | Unknown | NDArray[Unknown] | Any | list[Unknown]\" is not assignable to type \"DataFrame\"\n    \"list[Unknown]\" is not assignable to \"DataFrame\"",
+      "rule": "reportArgumentType",
+      "severity": "error",
+      "startCharacter": 12,
+      "startLine": 2917
+    },
+    {
+      "endCharacter": 24,
+      "endLine": 2918,
+      "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
+      "message": "Argument of type \"DataFrame | Unknown | NDArray[Unknown] | Any | list[Unknown]\" cannot be assigned to parameter \"train_labels\" of type \"DataFrame\" in function \"build_data_dictionary\"\n  Type \"DataFrame | Unknown | NDArray[Unknown] | Any | list[Unknown]\" is not assignable to type \"DataFrame\"\n    \"list[Unknown]\" is not assignable to \"DataFrame\"",
+      "rule": "reportArgumentType",
+      "severity": "error",
+      "startCharacter": 12,
+      "startLine": 2918
+    },
+    {
+      "endCharacter": 23,
+      "endLine": 2919,
+      "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
+      "message": "Argument of type \"DataFrame | Unknown | NDArray[Unknown] | Any | list[Unknown]\" cannot be assigned to parameter \"test_labels\" of type \"DataFrame\" in function \"build_data_dictionary\"\n  Type \"DataFrame | Unknown | NDArray[Unknown] | Any | list[Unknown]\" is not assignable to type \"DataFrame\"\n    \"list[Unknown]\" is not assignable to \"DataFrame\"",
+      "rule": "reportArgumentType",
+      "severity": "error",
+      "startCharacter": 12,
+      "startLine": 2919
+    },
+    {
       "endCharacter": 87,
-      "endLine": 3246,
+      "endLine": 3249,
       "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
       "message": "Cannot access attribute \"index\" for class \"NDArray[Unknown]\"\n  Attribute \"index\" is unknown",
       "rule": "reportAttributeAccessIssue",
       "severity": "error",
       "startCharacter": 82,
-      "startLine": 3246
+      "startLine": 3249
     },
     {
       "endCharacter": 68,
-      "endLine": 3247,
+      "endLine": 3250,
       "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
       "message": "Cannot access attribute \"index\" for class \"NDArray[Unknown]\"\n  Attribute \"index\" is unknown",
       "rule": "reportAttributeAccessIssue",
       "severity": "error",
       "startCharacter": 63,
-      "startLine": 3247
+      "startLine": 3250
     },
     {
       "endCharacter": 71,
-      "endLine": 3256,
+      "endLine": 3259,
       "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
       "message": "Cannot access attribute \"index\" for class \"NDArray[Unknown]\"\n  Attribute \"index\" is unknown",
       "rule": "reportAttributeAccessIssue",
       "severity": "error",
       "startCharacter": 66,
-      "startLine": 3256
+      "startLine": 3259
     },
     {
       "endCharacter": 47,
-      "endLine": 3259,
+      "endLine": 3262,
       "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
       "message": "Cannot access attribute \"loc\" for class \"NDArray[Unknown]\"\n  Attribute \"loc\" is unknown",
       "rule": "reportAttributeAccessIssue",
       "severity": "error",
       "startCharacter": 44,
-      "startLine": 3259
+      "startLine": 3262
     },
     {
       "endCharacter": 47,
-      "endLine": 3259,
+      "endLine": 3262,
       "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
       "message": "Cannot access attribute \"loc\" for class \"list[Unknown]\"\n  Attribute \"loc\" is unknown",
       "rule": "reportAttributeAccessIssue",
       "severity": "error",
       "startCharacter": 44,
-      "startLine": 3259
+      "startLine": 3262
     },
     {
       "endCharacter": 43,
-      "endLine": 3260,
+      "endLine": 3263,
       "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
       "message": "Cannot access attribute \"loc\" for class \"NDArray[Unknown]\"\n  Attribute \"loc\" is unknown",
       "rule": "reportAttributeAccessIssue",
       "severity": "error",
       "startCharacter": 40,
-      "startLine": 3260
+      "startLine": 3263
     },
     {
       "endCharacter": 43,
-      "endLine": 3260,
+      "endLine": 3263,
       "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
       "message": "Cannot access attribute \"loc\" for class \"list[Unknown]\"\n  Attribute \"loc\" is unknown",
       "rule": "reportAttributeAccessIssue",
       "severity": "error",
       "startCharacter": 40,
-      "startLine": 3260
+      "startLine": 3263
     },
     {
       "endCharacter": 31,
-      "endLine": 3281,
+      "endLine": 3284,
       "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
       "message": "Cannot access attribute \"empty\" for class \"NDArray[Unknown]\"\n  Attribute \"empty\" is unknown",
       "rule": "reportAttributeAccessIssue",
       "severity": "error",
       "startCharacter": 26,
-      "startLine": 3281
+      "startLine": 3284
     },
     {
       "endCharacter": 31,
-      "endLine": 3281,
+      "endLine": 3284,
       "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
       "message": "Cannot access attribute \"empty\" for class \"list[Unknown]\"\n  Attribute \"empty\" is unknown",
       "rule": "reportAttributeAccessIssue",
       "severity": "error",
       "startCharacter": 26,
-      "startLine": 3281
+      "startLine": 3284
     },
     {
       "endCharacter": 60,
-      "endLine": 3281,
+      "endLine": 3284,
       "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
       "message": "Cannot access attribute \"empty\" for class \"NDArray[Unknown]\"\n  Attribute \"empty\" is unknown",
       "rule": "reportAttributeAccessIssue",
       "severity": "error",
       "startCharacter": 55,
-      "startLine": 3281
+      "startLine": 3284
     },
     {
       "endCharacter": 60,
-      "endLine": 3281,
+      "endLine": 3284,
       "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
       "message": "Cannot access attribute \"empty\" for class \"list[Unknown]\"\n  Attribute \"empty\" is unknown",
       "rule": "reportAttributeAccessIssue",
       "severity": "error",
       "startCharacter": 55,
-      "startLine": 3281
+      "startLine": 3284
     },
     {
       "endCharacter": 73,
-      "endLine": 3293,
+      "endLine": 3296,
       "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
       "message": "Argument of type \"Unknown | Any | ((value: Unknown, start: SupportsIndex = 0, stop: SupportsIndex = sys.maxsize, /) -> int)\" cannot be assigned to parameter \"target\" of type \"Index[Any]\" in function \"get_indexer\"\n  Type \"Unknown | Any | ((value: Unknown, start: SupportsIndex = 0, stop: SupportsIndex = sys.maxsize, /) -> int)\" is not assignable to type \"Index[Any]\"\n    \"MethodType\" is not assignable to \"Index[Any]\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 53,
-      "startLine": 3293
+      "startLine": 3296
     },
     {
       "endCharacter": 73,
-      "endLine": 3293,
+      "endLine": 3296,
       "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
       "message": "Cannot access attribute \"index\" for class \"NDArray[Unknown]\"\n  Attribute \"index\" is unknown",
       "rule": "reportAttributeAccessIssue",
       "severity": "error",
       "startCharacter": 68,
-      "startLine": 3293
+      "startLine": 3296
     },
     {
       "endCharacter": 83,
-      "endLine": 3294,
+      "endLine": 3297,
       "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
       "message": "Argument of type \"Unknown | Any | ((value: Unknown, start: SupportsIndex = 0, stop: SupportsIndex = sys.maxsize, /) -> int)\" cannot be assigned to parameter \"target\" of type \"Index[Any]\" in function \"get_indexer\"\n  Type \"Unknown | Any | ((value: Unknown, start: SupportsIndex = 0, stop: SupportsIndex = sys.maxsize, /) -> int)\" is not assignable to type \"Index[Any]\"\n    \"MethodType\" is not assignable to \"Index[Any]\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 58,
-      "startLine": 3294
+      "startLine": 3297
     },
     {
       "endCharacter": 83,
-      "endLine": 3294,
+      "endLine": 3297,
       "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
       "message": "Cannot access attribute \"index\" for class \"NDArray[Unknown]\"\n  Attribute \"index\" is unknown",
       "rule": "reportAttributeAccessIssue",
       "severity": "error",
       "startCharacter": 78,
-      "startLine": 3294
+      "startLine": 3297
     },
     {
       "endCharacter": 46,
-      "endLine": 3529,
+      "endLine": 3532,
       "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
       "message": "Cannot access attribute \"empty\" for class \"Buffer\"\n  Attribute \"empty\" is unknown",
       "rule": "reportAttributeAccessIssue",
       "severity": "error",
       "startCharacter": 41,
-      "startLine": 3529
+      "startLine": 3532
     },
     {
       "endCharacter": 46,
-      "endLine": 3529,
+      "endLine": 3532,
       "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
       "message": "Cannot access attribute \"empty\" for class \"_NestedSequence[_SupportsArray[dtype[Any]]]\"\n  Attribute \"empty\" is unknown",
       "rule": "reportAttributeAccessIssue",
       "severity": "error",
       "startCharacter": 41,
-      "startLine": 3529
+      "startLine": 3532
     },
     {
       "endCharacter": 46,
-      "endLine": 3529,
+      "endLine": 3532,
       "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
       "message": "Cannot access attribute \"empty\" for class \"_NestedSequence[complex | bytes | str]\"\n  Attribute \"empty\" is unknown",
       "rule": "reportAttributeAccessIssue",
       "severity": "error",
       "startCharacter": 41,
-      "startLine": 3529
+      "startLine": 3532
     },
     {
       "endCharacter": 46,
-      "endLine": 3529,
+      "endLine": 3532,
       "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
       "message": "Cannot access attribute \"empty\" for class \"_SupportsArray[dtype[Any]]\"\n  Attribute \"empty\" is unknown",
       "rule": "reportAttributeAccessIssue",
       "severity": "error",
       "startCharacter": 41,
-      "startLine": 3529
+      "startLine": 3532
     },
     {
       "endCharacter": 46,
-      "endLine": 3529,
+      "endLine": 3532,
       "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
       "message": "Cannot access attribute \"empty\" for class \"bytes\"\n  Attribute \"empty\" is unknown",
       "rule": "reportAttributeAccessIssue",
       "severity": "error",
       "startCharacter": 41,
-      "startLine": 3529
+      "startLine": 3532
     },
     {
       "endCharacter": 46,
-      "endLine": 3529,
+      "endLine": 3532,
       "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
       "message": "Cannot access attribute \"empty\" for class \"complex\"\n  Attribute \"empty\" is unknown",
       "rule": "reportAttributeAccessIssue",
       "severity": "error",
       "startCharacter": 41,
-      "startLine": 3529
+      "startLine": 3532
     },
     {
       "endCharacter": 46,
-      "endLine": 3529,
+      "endLine": 3532,
       "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
       "message": "Cannot access attribute \"empty\" for class \"str\"\n  Attribute \"empty\" is unknown",
       "rule": "reportAttributeAccessIssue",
       "severity": "error",
       "startCharacter": 41,
-      "startLine": 3529
+      "startLine": 3532
     },
     {
       "endCharacter": 41,
-      "endLine": 3536,
+      "endLine": 3539,
       "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
       "message": "Argument of type \"ArrayLike\" cannot be assigned to parameter \"features\" of type \"DataFrame\" in function \"_sanitize_pipeline_weights\"\n  Type \"ArrayLike\" is not assignable to type \"DataFrame\"\n    \"Buffer\" is not assignable to \"DataFrame\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 16,
-      "startLine": 3536
+      "startLine": 3539
     },
     {
       "endCharacter": 39,
-      "endLine": 3585,
+      "endLine": 3588,
       "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
       "message": "Argument of type \"ArrayLike\" cannot be assigned to parameter \"features\" of type \"DataFrame\" in function \"_sanitize_pipeline_weights\"\n  Type \"ArrayLike\" is not assignable to type \"DataFrame\"\n    \"Buffer\" is not assignable to \"DataFrame\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 20,
-      "startLine": 3585
+      "startLine": 3588
     },
     {
       "endCharacter": 19,
-      "endLine": 3695,
+      "endLine": 3698,
       "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
       "message": "Argument of type \"int | Any | None\" cannot be assigned to parameter \"gap\" of type \"int\" in function \"__init__\"\n  Type \"int | Any | None\" is not assignable to type \"int\"\n    \"None\" is not assignable to \"int\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 16,
-      "startLine": 3695
+      "startLine": 3698
     },
     {
       "endCharacter": 21,
-      "endLine": 3806,
-      "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
-      "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"X\" of type \"DataFrame\" in function \"hp_objective\"\n  Type \"Any | None\" is not assignable to type \"DataFrame\"\n    \"None\" is not assignable to \"DataFrame\"",
-      "rule": "reportArgumentType",
-      "severity": "error",
-      "startCharacter": 20,
-      "startLine": 3806
-    },
-    {
-      "endCharacter": 21,
-      "endLine": 3807,
-      "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
-      "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"y\" of type \"DataFrame\" in function \"hp_objective\"\n  Type \"Any | None\" is not assignable to type \"DataFrame\"\n    \"None\" is not assignable to \"DataFrame\"",
-      "rule": "reportArgumentType",
-      "severity": "error",
-      "startCharacter": 20,
-      "startLine": 3807
-    },
-    {
-      "endCharacter": 33,
-      "endLine": 3808,
-      "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
-      "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"train_weights\" of type \"NDArray[floating[Any]]\" in function \"hp_objective\"\n  Type \"Any | None\" is not assignable to type \"NDArray[floating[Any]]\"\n    \"None\" is not assignable to \"ndarray[_AnyShape, dtype[floating[Any]]]\"",
-      "rule": "reportArgumentType",
-      "severity": "error",
-      "startCharacter": 20,
-      "startLine": 3808
-    },
-    {
-      "endCharacter": 32,
       "endLine": 3809,
       "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
-      "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"X_validation\" of type \"DataFrame\" in function \"hp_objective\"\n  Type \"Any | None\" is not assignable to type \"DataFrame\"\n    \"None\" is not assignable to \"DataFrame\"",
+      "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"X\" of type \"DataFrame\" in function \"hp_objective\"\n  Type \"Any | None\" is not assignable to type \"DataFrame\"\n    \"None\" is not assignable to \"DataFrame\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 20,
       "startLine": 3809
     },
     {
-      "endCharacter": 32,
+      "endCharacter": 21,
       "endLine": 3810,
       "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
-      "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"y_validation\" of type \"DataFrame\" in function \"hp_objective\"\n  Type \"Any | None\" is not assignable to type \"DataFrame\"\n    \"None\" is not assignable to \"DataFrame\"",
+      "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"y\" of type \"DataFrame\" in function \"hp_objective\"\n  Type \"Any | None\" is not assignable to type \"DataFrame\"\n    \"None\" is not assignable to \"DataFrame\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 20,
       "startLine": 3810
     },
     {
-      "endCharacter": 38,
+      "endCharacter": 33,
       "endLine": 3811,
       "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
-      "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"validation_weights\" of type \"NDArray[floating[Any]]\" in function \"hp_objective\"\n  Type \"Any | None\" is not assignable to type \"NDArray[floating[Any]]\"\n    \"None\" is not assignable to \"ndarray[_AnyShape, dtype[floating[Any]]]\"",
+      "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"train_weights\" of type \"NDArray[floating[Any]]\" in function \"hp_objective\"\n  Type \"Any | None\" is not assignable to type \"NDArray[floating[Any]]\"\n    \"None\" is not assignable to \"ndarray[_AnyShape, dtype[floating[Any]]]\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 20,
       "startLine": 3811
     },
     {
+      "endCharacter": 32,
+      "endLine": 3812,
+      "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
+      "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"X_validation\" of type \"DataFrame\" in function \"hp_objective\"\n  Type \"Any | None\" is not assignable to type \"DataFrame\"\n    \"None\" is not assignable to \"DataFrame\"",
+      "rule": "reportArgumentType",
+      "severity": "error",
+      "startCharacter": 20,
+      "startLine": 3812
+    },
+    {
+      "endCharacter": 32,
+      "endLine": 3813,
+      "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
+      "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"y_validation\" of type \"DataFrame\" in function \"hp_objective\"\n  Type \"Any | None\" is not assignable to type \"DataFrame\"\n    \"None\" is not assignable to \"DataFrame\"",
+      "rule": "reportArgumentType",
+      "severity": "error",
+      "startCharacter": 20,
+      "startLine": 3813
+    },
+    {
+      "endCharacter": 38,
+      "endLine": 3814,
+      "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
+      "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"validation_weights\" of type \"NDArray[floating[Any]]\" in function \"hp_objective\"\n  Type \"Any | None\" is not assignable to type \"NDArray[floating[Any]]\"\n    \"None\" is not assignable to \"ndarray[_AnyShape, dtype[floating[Any]]]\"",
+      "rule": "reportArgumentType",
+      "severity": "error",
+      "startCharacter": 20,
+      "startLine": 3814
+    },
+    {
       "endCharacter": 24,
-      "endLine": 3832,
+      "endLine": 3835,
       "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
       "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"X_test\" of type \"DataFrame\" in function \"make_test_set_and_weights\"\n  Type \"Any | None\" is not assignable to type \"DataFrame\"\n    \"None\" is not assignable to \"DataFrame\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 12,
-      "startLine": 3832
+      "startLine": 3835
     },
     {
       "endCharacter": 24,
-      "endLine": 3833,
+      "endLine": 3836,
       "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
       "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"y_test\" of type \"DataFrame\" in function \"make_test_set_and_weights\"\n  Type \"Any | None\" is not assignable to type \"DataFrame\"\n    \"None\" is not assignable to \"DataFrame\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 12,
-      "startLine": 3833
+      "startLine": 3836
     },
     {
       "endCharacter": 30,
-      "endLine": 3834,
+      "endLine": 3837,
       "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
       "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"test_weights\" of type \"NDArray[floating[Any]]\" in function \"make_test_set_and_weights\"\n  Type \"Any | None\" is not assignable to type \"NDArray[floating[Any]]\"\n    \"None\" is not assignable to \"ndarray[_AnyShape, dtype[floating[Any]]]\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 12,
-      "startLine": 3834
+      "startLine": 3837
     },
     {
       "endCharacter": 15,
-      "endLine": 3840,
+      "endLine": 3843,
       "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
       "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"X\" of type \"DataFrame\" in function \"fit_regressor\"\n  Type \"Any | None\" is not assignable to type \"DataFrame\"\n    \"None\" is not assignable to \"DataFrame\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 14,
-      "startLine": 3840
+      "startLine": 3843
     },
     {
       "endCharacter": 15,
-      "endLine": 3841,
+      "endLine": 3844,
       "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
       "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"y\" of type \"DataFrame\" in function \"fit_regressor\"\n  Type \"Any | None\" is not assignable to type \"DataFrame\"\n    \"None\" is not assignable to \"DataFrame\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 14,
-      "startLine": 3841
+      "startLine": 3844
     },
     {
       "endCharacter": 39,
-      "endLine": 3842,
+      "endLine": 3845,
       "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
       "message": "Argument of type \"Any | None\" cannot be assigned to parameter \"train_weights\" of type \"NDArray[floating[Any]]\" in function \"fit_regressor\"\n  Type \"Any | None\" is not assignable to type \"NDArray[floating[Any]]\"\n    \"None\" is not assignable to \"ndarray[_AnyShape, dtype[floating[Any]]]\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 26,
-      "startLine": 3842
+      "startLine": 3845
     },
     {
       "endCharacter": 38,
-      "endLine": 3852,
+      "endLine": 3855,
       "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
       "message": "\"columns\" is not a known attribute of \"None\"",
       "rule": "reportOptionalMemberAccess",
       "severity": "error",
       "startCharacter": 31,
-      "startLine": 3852
+      "startLine": 3855
     },
     {
       "endCharacter": 34,
-      "endLine": 3853,
+      "endLine": 3856,
       "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
       "message": "\"index\" is not a known attribute of \"None\"",
       "rule": "reportOptionalMemberAccess",
       "severity": "error",
       "startCharacter": 29,
-      "startLine": 3853
+      "startLine": 3856
     },
     {
       "endCharacter": 82,
-      "endLine": 3855,
+      "endLine": 3858,
       "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
       "message": "\"copy\" is not a known attribute of \"None\"",
       "rule": "reportOptionalMemberAccess",
       "severity": "error",
       "startCharacter": 78,
-      "startLine": 3855
+      "startLine": 3858
     },
     {
       "endCharacter": 62,
-      "endLine": 4275,
+      "endLine": 4278,
       "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
       "message": "\"get_pair_dataframe\" is not a known attribute of \"None\"",
       "rule": "reportOptionalMemberAccess",
       "severity": "error",
       "startCharacter": 44,
-      "startLine": 4275
+      "startLine": 4278
     },
     {
       "endCharacter": 68,
-      "endLine": 4662,
+      "endLine": 4665,
       "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
       "message": "Type \"floating[Any] | NDArray[float64]\" is not assignable to return type \"NDArray[floating[Any]]\"\n  Type \"floating[Any] | NDArray[float64]\" is not assignable to type \"NDArray[floating[Any]]\"\n    \"floating[Any]\" is not assignable to \"ndarray[_AnyShape, dtype[floating[Any]]]\"",
       "rule": "reportReturnType",
       "severity": "error",
       "startCharacter": 15,
-      "startLine": 4658
+      "startLine": 4661
     },
     {
       "endCharacter": 13,
-      "endLine": 4691,
+      "endLine": 4694,
       "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
       "message": "No overloads for \"cdist\" match the provided arguments",
       "rule": "reportCallIssue",
       "severity": "error",
       "startCharacter": 19,
-      "startLine": 4686
+      "startLine": 4689
     },
     {
       "endCharacter": 38,
-      "endLine": 4689,
+      "endLine": 4692,
       "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
       "message": "Argument of type \"str\" cannot be assigned to parameter \"metric\" of type \"_MetricFunc\" in function \"cdist\"\n  Type \"str\" is not assignable to type \"_MetricFunc\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 23,
-      "startLine": 4689
+      "startLine": 4692
     },
     {
       "endCharacter": 9,
-      "endLine": 4794,
+      "endLine": 4797,
       "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
       "message": "No overloads for \"pdist\" match the provided arguments",
       "rule": "reportCallIssue",
       "severity": "error",
       "startCharacter": 36,
-      "startLine": 4792
+      "startLine": 4795
     },
     {
       "endCharacter": 42,
-      "endLine": 4793,
+      "endLine": 4796,
       "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
       "message": "Argument of type \"str\" cannot be assigned to parameter \"metric\" of type \"_MetricFunc\" in function \"pdist\"\n  Type \"str\" is not assignable to type \"_MetricFunc\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 27,
-      "startLine": 4793
+      "startLine": 4796
     },
     {
       "endCharacter": 9,
-      "endLine": 4871,
+      "endLine": 4874,
       "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
       "message": "No overloads for \"cdist\" match the provided arguments",
       "rule": "reportCallIssue",
       "severity": "error",
       "startCharacter": 15,
-      "startLine": 4866
+      "startLine": 4869
     },
     {
       "endCharacter": 34,
-      "endLine": 4869,
+      "endLine": 4872,
       "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
       "message": "Argument of type \"str\" cannot be assigned to parameter \"metric\" of type \"_MetricFunc\" in function \"cdist\"\n  Type \"str\" is not assignable to type \"_MetricFunc\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 19,
-      "startLine": 4869
+      "startLine": 4872
     },
     {
       "endCharacter": 99,
-      "endLine": 5060,
+      "endLine": 5063,
       "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
       "message": "No overloads for \"pdist\" match the provided arguments",
       "rule": "reportCallIssue",
       "severity": "error",
       "startCharacter": 12,
-      "startLine": 5060
+      "startLine": 5063
     },
     {
       "endCharacter": 79,
-      "endLine": 5060,
+      "endLine": 5063,
       "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
       "message": "Argument of type \"str\" cannot be assigned to parameter \"metric\" of type \"_MetricFunc\" in function \"pdist\"\n  Type \"str\" is not assignable to type \"_MetricFunc\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 64,
-      "startLine": 5060
+      "startLine": 5063
     },
     {
       "endCharacter": 55,

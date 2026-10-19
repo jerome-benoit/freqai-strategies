@@ -1,6 +1,7 @@
 """Prediction validity and transport contracts in the native Freqtrade QA image."""
 
 import importlib
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -788,6 +789,62 @@ class BacktestContractsTest(QaTestCase):
             cached = self._run_backtest(
                 directory / "shared", frame, config_overrides={"target_scale": -1.0}, **options
             )
+
+            self.assertNotEqual(first.data_path.parent, changed.data_path.parent)
+            self.assertEqual(changed.data_path.parent, cached.data_path.parent)
+            pd.testing.assert_frame_equal(changed.return_dataframe, fresh.return_dataframe)
+            pd.testing.assert_frame_equal(cached.return_dataframe, fresh.return_dataframe)
+            self.assertFalse(
+                np.allclose(
+                    first.return_dataframe[LABEL], fresh.return_dataframe[LABEL], equal_nan=True
+                )
+            )
+
+    def test_native_target_parameters_isolate_cache_by_resolved_values(self):
+        with temporary_directory() as directory:
+            implementations = directory / "implementations"
+            implementations.mkdir()
+            source = implementations / "parameter_targets.py"
+            source.write_text(
+                "from freqtrade.strategy import IntParameter\n"
+                "from QuickAdapterV3 import QuickAdapterV3\n"
+                "class ParameterTargets(QuickAdapterV3):\n"
+                "    target_scale = IntParameter(-1, 1, default=1, space='buy')\n"
+                "    ignored_scale = IntParameter(-1, 1, default=1, space='buy', load=False)\n"
+                "    def bot_start(self, **kwargs):\n"
+                "        super().bot_start(**kwargs)\n"
+                "        self.ft_load_hyper_params(False)\n"
+                "    def set_freqai_targets(self, dataframe, metadata, **kwargs):\n"
+                "        result = super().set_freqai_targets(dataframe, metadata, **kwargs)\n"
+                "        result['&s-extrema'] *= self.target_scale.value * self.ignored_scale.value\n"
+                "        return result\n"
+            )
+            frame = ohlcv_frame(
+                100 + 8 * np.sin(np.arange(720) / 6) + 2 * np.sin(np.arange(720) / 23)
+            )
+            options = {
+                "strategy_name": "ParameterTargets",
+                "strategy_path": implementations,
+                "config_overrides": {"trading_mode": "spot"},
+            }
+
+            def parameters(**values):
+                source.with_suffix(".json").write_text(
+                    json.dumps({"strategy_name": "ParameterTargets", "params": {"buy": values}})
+                )
+
+            parameters(target_scale=1, ignored_scale=-1)
+            first = self._run_backtest(directory / "shared", frame, **options)
+            parameters(ignored_scale=0)
+            default = self._run_backtest(directory / "shared", frame, **options)
+            self.assertEqual(first.data_path.parent, default.data_path.parent)
+            pd.testing.assert_frame_equal(first.return_dataframe, default.return_dataframe)
+
+            parameters(target_scale=-1, ignored_scale=-1)
+            changed = self._run_backtest(directory / "shared", frame, **options)
+            fresh = self._run_backtest(directory / "fresh", frame, **options)
+            parameters(target_scale=-1, ignored_scale=0)
+            cached = self._run_backtest(directory / "shared", frame, **options)
 
             self.assertNotEqual(first.data_path.parent, changed.data_path.parent)
             self.assertEqual(changed.data_path.parent, cached.data_path.parent)

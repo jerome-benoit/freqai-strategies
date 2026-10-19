@@ -2290,6 +2290,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             "freqai": self._backtest_config,
             "model_config": self.config,
             "strategy_config": strategy.config,
+            "strategy_parameters": {
+                name: parameter.value for name, parameter in strategy.enumerate_parameters()
+            },
             "pair": pair,
             "labels": {label: strategy.get_label_params(pair, label) for label in LABEL_COLUMNS},
             "versions": {

@@ -154,10 +154,16 @@ deployed models.
 Backtests store reusable models and predictions under
 `models/<identifier>/backtesting/<fingerprint>/`. Cache identity includes input
 data, effective model and strategy configuration (including settings outside
-`freqai`), effective label parameters, strategy/model code and dependency versions.
+`freqai`), effective label and native strategy parameters, strategy/model code
+and dependency versions.
 Changing these inputs or extending the dataset uses a separate cache directory.
 Even configuration changes unrelated to training can therefore trigger retraining.
 Existing artifacts remain on disk; they are not deleted.
+
+Native strategy parameters are compared after defaults and the strategy's
+adjacent JSON parameter file have been applied. Editing that file does not
+invalidate the cache if effective parameter values and all other inputs stay
+unchanged.
 
 Any prepared input column with pandas `object` or `category` dtype disables
 reuse, including non-feature inputs and structured orderflow data. Value hashing
