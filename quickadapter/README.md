@@ -179,9 +179,6 @@ For older histories without reliable provenance, only distinguishable model
 outputs count. Ambiguous rows remain excluded, even when their displayed value
 is zero; see [`prediction_available`](#prediction-diagnostics-and-gaps).
 
-Routine warmup progress is logged at `DEBUG`. Warnings report history gaps or
-stale observations that restart warmup.
-
 ### Missing observations
 
 Missing predictions delay warmup. A pair starts a new warmup if a gap between
