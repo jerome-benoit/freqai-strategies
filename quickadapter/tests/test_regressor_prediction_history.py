@@ -678,6 +678,55 @@ class RegressorPredictionHistoryTest(QaTestCase):
 
         self.assertTrue(np.isposinf(extra["holdout_rmse"]))
 
+    def _hpo_window(self):
+        frame = pd.DataFrame(
+            {
+                "date": pd.date_range("2026-01-01", periods=12, freq=CANDLE_FREQ, tz="UTC"),
+                "close": np.arange(12, dtype=float),
+            }
+        )
+        model = regressor(live=False, dd=drawer())
+        model.data_provider = SimpleNamespace(get_pair_dataframe=lambda **kwargs: frame)
+        model.dd.historic_predictions[PAIR] = frame.iloc[:2]
+        dk = kitchen()
+        dk.full_df = frame
+        return model, dk, frame
+
+    def test_label_hpo_uses_current_cursor_after_missing_predictions(self):
+        for observations in (0, 2):
+            with self.subTest(produced_observations=observations):
+                model, dk, frame = self._hpo_window()
+                model.dd.historic_predictions[PAIR] = frame.iloc[:observations]
+                model._calibration_current_candles[PAIR] = frame["date"].iloc[7]
+
+                result = model._label_hpo_dataframe_as_of_prediction_time(dk, PAIR)
+
+                pd.testing.assert_frame_equal(result, frame.iloc[:8])
+
+    def test_label_hpo_keeps_historical_inference_without_a_cursor(self):
+        model, dk, frame = self._hpo_window()
+
+        result = model._label_hpo_dataframe_as_of_prediction_time(dk, PAIR)
+
+        pd.testing.assert_frame_equal(result, frame.iloc[:3])
+
+    def test_label_hpo_rejects_an_unknown_explicit_cursor(self):
+        model, dk, _ = self._hpo_window()
+        model._calibration_current_candles[PAIR] = pd.NaT
+
+        result = model._label_hpo_dataframe_as_of_prediction_time(dk, PAIR)
+
+        self.assertTrue(result.empty)
+
+    def test_label_hpo_live_uses_the_provider_window(self):
+        model, dk, frame = self._hpo_window()
+        model.live = True
+        model._calibration_current_candles[PAIR] = frame["date"].iloc[3]
+
+        result = model._label_hpo_dataframe_as_of_prediction_time(dk, PAIR)
+
+        pd.testing.assert_frame_equal(result, frame)
+
     # --------------------------------------------------------------- optuna throttling
 
     def _throttled(self, budget: int, pool: list[int] | None = None) -> QuickAdapterRegressorV3:

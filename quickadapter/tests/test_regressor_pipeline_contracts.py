@@ -1,5 +1,7 @@
 """Prediction validity and transport contracts in the native Freqtrade QA image."""
 
+import importlib
+import sys
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -9,6 +11,9 @@ import pandas as pd
 from freqtrade.enums import RunMode
 from freqtrade.freqai.data_kitchen import FreqaiDataKitchen
 from freqtrade.plot.plotting import add_indicators
+from freqtrade.resolvers.freqaimodel_resolver import FreqaiModelResolver
+from freqtrade.resolvers.strategy_resolver import StrategyResolver
+from freqtrade.rpc.rpc import RPC
 from plotly.subplots import make_subplots
 from qa_support import (
     CONFIG_TEMPLATE,
@@ -158,42 +163,104 @@ class PredictionTransportTest(QaTestCase):
                 restored.dd.historic_predictions[PAIR]["holdout_rmse"], [0, np.nan, np.nan]
             )
 
-    def test_old_history_accepts_new_metrics_without_fabricating_past_scores(self):
+    def test_restored_public_returns_distinguish_absence_legacy_and_real_zero(self):
         with temporary_directory() as directory:
-            config = model_config(directory, freqai={"optuna_hyperopt": {"enabled": False}})
-            model = QuickAdapterRegressorV3(config=config)
-            model.live = True
-            kitchen = FreqaiDataKitchen(config, live=True, pair=PAIR)
-            kitchen.label_list = [LABEL]
-            kitchen.data.update(
-                labels_mean={LABEL: 0.0},
-                labels_std={LABEL: 0.1},
-                extra_returns_per_train={"holdout_rmse": 0.25, "label_period_candles": 1},
-            )
-            dates = pd.date_range("2026-01-01", periods=3, freq="5min", tz="UTC")
+            model, kitchen, training = trained_regressor(directory)
+            inputs = training.iloc[30:34].copy()
+            predictions, _ = model.predict(inputs, kitchen)
+            strategy = ohlcv_frame(np.full(len(inputs), 100.0))
+            strategy["date"] = inputs["date"].to_numpy()
+            strategy["%-x"] = inputs["%-x"].to_numpy()
+            strategy["%-lag"] = inputs["%-lag"].to_numpy()
+            model.dd.get_pair_dict_info(PAIR)
+            model.dd.save_data(model.model, PAIR, kitchen)
+            model.dd.save_drawer_to_disk()
             model.dd.historic_predictions[PAIR] = pd.DataFrame(
                 {
-                    "date_pred": dates[:2],
-                    LABEL: [0.1, 0.0],
-                    "do_predict": [1, 0],
-                    "close_price": [100.0, 100.0],
-                    "high_price": [101.0, 101.0],
-                    "low_price": [99.0, 99.0],
-                    _PRODUCED_PREDICTION_COLUMN: [True, True],
+                    "date_pred": strategy["date"].iloc[1:].to_numpy(),
+                    LABEL: [0.0, 0.0, predictions[LABEL].iloc[-1]],
+                    "do_predict": [0, 0, 1],
+                    _PRODUCED_PREDICTION_COLUMN: [np.nan, True, True],
                 }
             )
-            strategy = pd.DataFrame(
-                {"date": dates, "high": [101.0] * 3, "low": [99.0] * 3, "close": [100.0] * 3}
-            )
+            model.dd.save_historic_predictions_to_disk()
+            restored = QuickAdapterRegressorV3(config=model.config)
+            restored.live = True
+            loaded = FreqaiDataKitchen(model.config, live=True, pair=PAIR)
+            restored.model = restored.dd.load_data(PAIR, loaded)
 
-            model.dd.append_model_predictions(
-                PAIR, pd.DataFrame({LABEL: [0.0]}), np.array([0]), kitchen, strategy
-            )
-            result = model._normalise_prediction_returns(model.dd.historic_predictions[PAIR])
+            restored.build_strategy_return_arrays(strategy, loaded, PAIR, 0)
 
-            np.testing.assert_allclose(result["holdout_rmse"], [np.nan, np.nan, 0.25])
-            np.testing.assert_allclose(result["prediction_available"], [1, 1, 1])
-            np.testing.assert_allclose(result[LABEL], [0.1, 0.0, 0.0])
+            result = loaded.return_dataframe
+            np.testing.assert_allclose(result["prediction_available"], [0, np.nan, 1, 1])
+            np.testing.assert_allclose(
+                result[LABEL], [np.nan, 0.0, 0.0, predictions[LABEL].iloc[-1]]
+            )
+            self.assertEqual(result["date"].tolist(), strategy["date"].tolist())
+            payload = RPC._convert_dataframe_to_dict(
+                "QuickAdapterV3",
+                PAIR,
+                "5m",
+                result,
+                strategy["date"].iloc[-1].to_pydatetime(),
+                None,
+                [],
+            )
+            availability = payload["columns"].index("prediction_available")
+            prediction = payload["columns"].index(LABEL)
+            self.assertEqual([row[availability] for row in payload["data"]], [0, None, 1, 1])
+            self.assertEqual([row[prediction] for row in payload["data"]][:3], [None, 0.0, 0.0])
+            self.assertNotIn(_PRODUCED_PREDICTION_COLUMN, payload["columns"])
+
+    def test_old_history_accepts_new_metrics_without_fabricating_past_scores(self):
+        for flag in (True, False, np.bool_(True), np.bool_(False)):
+            with self.subTest(flag=flag), temporary_directory() as directory:
+                config = model_config(directory, freqai={"optuna_hyperopt": {"enabled": False}})
+                model = QuickAdapterRegressorV3(config=config)
+                model.live = True
+                kitchen = FreqaiDataKitchen(config, live=True, pair=PAIR)
+                kitchen.label_list = [LABEL]
+                kitchen.data.update(
+                    labels_mean={LABEL: 0.0},
+                    labels_std={LABEL: 0.1},
+                    extra_returns_per_train={
+                        "holdout_rmse": 0.25,
+                        "label_period_candles": 1,
+                        "has_signal": flag,
+                    },
+                )
+                dates = pd.date_range("2026-01-01", periods=3, freq="5min", tz="UTC")
+                model.dd.historic_predictions[PAIR] = pd.DataFrame(
+                    {
+                        "date_pred": dates[:2],
+                        LABEL: [0.1, 0.0],
+                        "do_predict": [1, 0],
+                        "close_price": [100.0, 100.0],
+                        "high_price": [101.0, 101.0],
+                        "low_price": [99.0, 99.0],
+                        _PRODUCED_PREDICTION_COLUMN: [True, True],
+                    }
+                )
+                strategy = pd.DataFrame(
+                    {"date": dates, "high": [101.0] * 3, "low": [99.0] * 3, "close": [100.0] * 3}
+                )
+
+                model.dd.append_model_predictions(
+                    PAIR, pd.DataFrame({LABEL: [0.0]}), np.array([0]), kitchen, strategy
+                )
+                model.dd.save_historic_predictions_to_disk()
+                restored = QuickAdapterRegressorV3(config=config)
+                restored.dd.set_initial_return_values(PAIR, pd.DataFrame({LABEL: [0.0]}), strategy)
+                result = restored._normalise_prediction_returns(
+                    restored.dd.model_return_values[PAIR]
+                )
+
+                np.testing.assert_allclose(result["holdout_rmse"], [np.nan, np.nan, 0.25])
+                np.testing.assert_allclose(result["prediction_available"], [1, 1, 1])
+                np.testing.assert_allclose(result[LABEL], [0.1, 0.0, 0.0])
+                self.assertTrue(result["has_signal"].iloc[:2].isna().all())
+                self.assertIsInstance(result["has_signal"].iloc[-1], (bool, np.bool_))
+                self.assertEqual(result["has_signal"].iloc[-1], flag)
 
     def test_native_no_model_return_does_not_expose_zero_predictions(self):
         with temporary_directory() as directory:
@@ -329,13 +396,25 @@ class BacktestContractsTest(QaTestCase):
             self.assertAlmostEqual(kitchen.full_df.loc[5, f"{LABEL}_mean"], 0.3)
 
     @staticmethod
-    def _run_backtest(directory: Path, frame: pd.DataFrame, weighting: str = "uniform"):
+    def _run_backtest(
+        directory: Path,
+        frame: pd.DataFrame,
+        weighting: str = "uniform",
+        *,
+        strategy_name: str = "QuickAdapterV3",
+        model_name: str = "QuickAdapterRegressorV3",
+        strategy_path: Path | None = None,
+        model_path: Path | None = None,
+    ):
+        frame = frame.copy()
+        frame["date"] = pd.to_datetime(frame["date"], utc=True)
         config = model_config(
             directory,
             freqai={
                 "continual_learning": False,
                 "save_backtest_models": True,
                 "activate_tensorboard": False,
+                "fit_live_predictions_candles": 12,
                 "label_weighting": {"strategy": weighting},
                 "optuna_hyperopt": {"enabled": False},
                 "feature_parameters": {
@@ -345,17 +424,29 @@ class BacktestContractsTest(QaTestCase):
                     "causal_mode": True,
                 },
                 "data_split_parameters": {"test_size": 0.2, "shuffle": False},
-                "model_training_parameters": {"n_estimators": 3, "n_jobs": 1, "verbosity": 0},
+                "model_training_parameters": {
+                    "n_estimators": 3,
+                    "n_jobs": 1,
+                    "verbosity": 0,
+                    "random_state": 7,
+                },
             },
         )
         config.update(
             runmode=RunMode.BACKTEST,
             timerange="20240102-20240103",
             config_files=[str(CONFIG_TEMPLATE)],
+            strategy=strategy_name,
+            freqaimodel=model_name,
+            freqaimodel_path=str(model_path or CONFIG_TEMPLATE.parent / "freqaimodels"),
         )
-        model = QuickAdapterRegressorV3(config=config)
+        model = FreqaiModelResolver.load_freqaimodel(config)
         model.live = False
-        strategy = QuickAdapterV3(config)
+        strategy = StrategyResolver._load_strategy(
+            strategy_name,
+            config,
+            extra_dir=str(strategy_path or CONFIG_TEMPLATE.parent / "strategies"),
+        )
         strategy.freqai = model
         strategy.freqai_info = config["freqai"]
         strategy.bot_start()
@@ -363,6 +454,107 @@ class BacktestContractsTest(QaTestCase):
         model.dk = kitchen
         model.start_backtesting(frame, {"pair": PAIR}, kitchen, strategy)
         return kitchen
+
+    def test_native_class_identity_isolates_cached_predictions_and_model_reload(self):
+        with temporary_directory() as directory:
+            implementations = directory / "implementations"
+            implementations.mkdir()
+            (implementations / "identity_strategies.py").write_text(
+                "from QuickAdapterV3 import QuickAdapterV3\n"
+                "class SharedStrategy(QuickAdapterV3):\n"
+                "    pass\n"
+                "class CacheStrategyA(SharedStrategy):\n"
+                "    pass\n"
+                "class CacheStrategyB(SharedStrategy):\n"
+                "    def set_freqai_targets(self, dataframe, metadata, **kwargs):\n"
+                "        result = super().set_freqai_targets(dataframe, metadata, **kwargs)\n"
+                "        result['&s-extrema'] = -result['&s-extrema']\n"
+                "        return result\n"
+            )
+            (implementations / "identity_models.py").write_text(
+                "from quickadapter.user_data.freqaimodels.QuickAdapterRegressorV3 import QuickAdapterRegressorV3\n"
+                "class CacheRegressorA(QuickAdapterRegressorV3):\n"
+                "    pass\n"
+                "class CacheRegressorB(CacheRegressorA):\n"
+                "    def predict(self, unfiltered_df, dk, **kwargs):\n"
+                "        result, status = super().predict(unfiltered_df, dk, **kwargs)\n"
+                "        result['&s-extrema'] = -result['&s-extrema']\n"
+                "        return result, status\n"
+            )
+            frame = ohlcv_frame(100.0 + np.sin(np.arange(720) / 9.0) * 4.0)
+            names = {"strategy_path": implementations, "model_path": implementations}
+            baseline = self._run_backtest(
+                directory / "shared",
+                frame,
+                strategy_name="CacheStrategyA",
+                model_name="CacheRegressorA",
+                **names,
+            )
+            for strategy_name, model_name in (
+                ("CacheStrategyB", "CacheRegressorA"),
+                ("CacheStrategyA", "CacheRegressorB"),
+            ):
+                with self.subTest(strategy=strategy_name, model=model_name):
+                    options = dict(names, strategy_name=strategy_name, model_name=model_name)
+                    cached = self._run_backtest(directory / "shared", frame, **options)
+                    fresh = self._run_backtest(
+                        directory / model_name / strategy_name, frame, **options
+                    )
+                    self.assertNotEqual(cached.data_path.parent, baseline.data_path.parent)
+                    pd.testing.assert_frame_equal(cached.return_dataframe, fresh.return_dataframe)
+                    baseline_values = baseline.return_dataframe[LABEL].dropna().to_numpy()
+                    cached_values = cached.return_dataframe[LABEL].dropna().to_numpy()
+                    self.assertFalse(np.array_equal(baseline_values, cached_values))
+                    if model_name == "CacheRegressorB":
+                        np.testing.assert_allclose(cached_values, -baseline_values)
+
+                    path = cached.backtesting_results_path
+                    damaged = pd.read_feather(path).drop(columns=[_PRODUCED_PREDICTION_COLUMN])
+                    damaged.to_feather(path)
+                    resumed = self._run_backtest(directory / "shared", frame, **options)
+                    self.assertEqual(resumed.data_path.parent, cached.data_path.parent)
+                    pd.testing.assert_frame_equal(resumed.return_dataframe, fresh.return_dataframe)
+
+    def test_inherited_source_change_invalidates_native_strategy_cache(self):
+        with temporary_directory() as directory:
+            implementations = directory / "implementations"
+            implementations.mkdir()
+            base_name = f"_qa_cache_base_{directory.name.replace('-', '_')}"
+            self.addCleanup(sys.modules.pop, base_name, None)
+            base_path = implementations / f"{base_name}.py"
+            base_source = (
+                "from QuickAdapterV3 import QuickAdapterV3\n"
+                "class CacheBaseStrategy(QuickAdapterV3):\n"
+                "    target_scale = 1.0\n"
+                "    def set_freqai_targets(self, dataframe, metadata, **kwargs):\n"
+                "        result = super().set_freqai_targets(dataframe, metadata, **kwargs)\n"
+                "        result['&s-extrema'] *= self.target_scale\n"
+                "        return result\n"
+            )
+            base_path.write_text(base_source)
+            (implementations / "inherited_strategy.py").write_text(
+                f"from {base_name} import CacheBaseStrategy\n"
+                "class InheritedCacheStrategy(CacheBaseStrategy):\n"
+                "    pass\n"
+            )
+            frame = ohlcv_frame(100.0 + np.sin(np.arange(720) / 9.0) * 4.0)
+            options = {"strategy_name": "InheritedCacheStrategy", "strategy_path": implementations}
+            first = self._run_backtest(directory / "shared", frame, **options)
+
+            base_path.write_text(base_source.replace("target_scale = 1.0", "target_scale = -1.0"))
+            sys.modules.pop(base_name)
+            importlib.invalidate_caches()
+            changed = self._run_backtest(directory / "shared", frame, **options)
+            fresh = self._run_backtest(directory / "fresh", frame, **options)
+
+            self.assertNotEqual(first.data_path.parent, changed.data_path.parent)
+            pd.testing.assert_frame_equal(changed.return_dataframe, fresh.return_dataframe)
+            self.assertFalse(
+                np.array_equal(
+                    first.return_dataframe[LABEL].dropna().to_numpy(),
+                    changed.return_dataframe[LABEL].dropna().to_numpy(),
+                )
+            )
 
     def test_shifted_cache_is_recomputed_and_changed_inputs_isolate_models(self):
         with temporary_directory() as directory:

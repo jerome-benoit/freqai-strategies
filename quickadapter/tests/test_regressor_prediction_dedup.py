@@ -269,6 +269,7 @@ class RegressorPredictionDedupTest(QaTestCase):
             aligned["do_predict"],
             pd.Series([1.0, 0.0, 1.0, 0.0], index=strategy.index, name="do_predict"),
         )
+        self.assertEqual(aligned[MARKER].tolist(), [True, False, True, False])
 
         drawer = drawer_stub(history)
         merged = FreqaiDataDrawer.attach_return_values_to_return_dataframe(drawer, PAIR, strategy)
@@ -286,6 +287,7 @@ class RegressorPredictionDedupTest(QaTestCase):
         aligned = _align_historic_predictions(history, strategy)
         self.assertEqual(aligned["do_predict"].tolist(), [0, 0, 0, 0])
         self.assertEqual(aligned["value"].isna().tolist(), [True, False, True, True])
+        self.assertNotIn(MARKER, aligned)
 
     def test_align_rejects_a_duplicate_date_pred(self):
         duplicated = pd.DataFrame(

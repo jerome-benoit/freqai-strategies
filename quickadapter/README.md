@@ -150,9 +150,10 @@ deployed models.
 
 Rolling backtests isolate models and prediction caches under
 `models/<identifier>/backtesting/<fingerprint>/`. The fingerprint covers the
-configuration, effective label parameters, QuickAdapter implementation, dependency
-versions, base OHLCV and calculated features, including informative and correlated
-features. Changed inputs or settings create a separate namespace; old artifacts
+configuration, effective label parameters, strategy and model class identities,
+their custom implementation sources, dependency versions, base OHLCV and
+calculated features, including informative and correlated features. Changed inputs
+or settings create a separate namespace; old artifacts
 are retained, not deleted. Extending the dataset also creates a new namespace.
 Cached windows must match the exact ordered candle dates and prediction schema.
 Older unscoped caches are not reused. Replaying stored live predictions with
@@ -187,17 +188,18 @@ available at the decision time, independently of the calibration window.
 A newer unavailable score remains unavailable rather than reviving an older
 finite score. Recovery does not warm up adaptive thresholds; a model fitted in
 the current session keeps its in-memory score. Missing columns in old histories
-are added without copying current metrics into earlier candles.
+remain unavailable for past candles. Numeric, boolean and text extras can be
+appended and restored without backfilling historical values.
 
 ## Prediction diagnostics and gaps
 
 `prediction_available` describes prediction provenance, not entry permission:
 
-| Value               | Meaning                                                                                                       |
-| ------------------- | ------------------------------------------------------------------------------------------------------------- |
-| `1`                 | A model output from complete input features, including genuine zero and outlier-rejected outputs.             |
-| `0`                 | A known absence: no model, bootstrap, missing input features, downtime, model expiration or backtest padding. |
-| `NaN` / JSON `null` | An ambiguous legacy row whose provenance cannot be established.                                               |
+| Value               | Meaning                                                                                                                  |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `1`                 | A model output from complete input features, including genuine zero and outlier-rejected outputs.                        |
+| `0`                 | A known absence: no model, bootstrap, missing input features or history, downtime, model expiration or backtest padding. |
+| `NaN` / JSON `null` | An ambiguous legacy row whose provenance cannot be established.                                                          |
 
 Rows with missing or infinite input features remain rejected after preprocessing.
 Their missing-input mask accumulates with outlier rejections; zero-filling inside

@@ -14,6 +14,8 @@ predictions before replaying enabled `fit_live_predictions()` updates
 ([training loop][freqai-source], [replay loop][freqai-replay]). QuickAdapter's
 replay uses the same produced-observation window and gap warmup rules as live
 calibration; see its [prediction contract](../quickadapter/README.md#prediction-warmup-and-restarts).
+During replay, label HPO reads OHLCV only through the current replay candle,
+including when intermediate predictions are missing.
 This does not change the upstream ordering: a label-HPO update during replay
 cannot affect an already-trained model. Testing that live feedback requires a
 chronological runner that interleaves training, prediction and state updates,

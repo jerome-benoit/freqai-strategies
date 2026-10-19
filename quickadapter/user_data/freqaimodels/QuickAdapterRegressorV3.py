@@ -44,6 +44,7 @@ from freqtrade.freqai.data_drawer import (
     FreqaiDataDrawer,
 )
 from freqtrade.freqai.data_kitchen import FreqaiDataKitchen
+from freqtrade.strategy.interface import IStrategy
 
 # Disabled: scikit-learn-extra 0.3.0 fails on Python 3.14 (__gxx_personality_v0).
 # from sklearn_extra.cluster import KMedoids
@@ -253,6 +254,10 @@ def _align_historic_predictions(history: pd.DataFrame, dataframe: pd.DataFrame) 
         aligned["do_predict"] = aligned["do_predict"].where(~missing, 0)
     else:
         aligned["do_predict"] = 0
+    if _PRODUCED_PREDICTION_COLUMN in aligned:
+        aligned[_PRODUCED_PREDICTION_COLUMN] = aligned[_PRODUCED_PREDICTION_COLUMN].where(
+            ~missing, False
+        )
     return aligned
 
 
@@ -2156,7 +2161,12 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             columns["DI_values"] = np.nan
         for column, value in columns.items():
             if column not in history:
-                dtype = float if isinstance(value, (int, float, np.number)) else object
+                dtype = (
+                    float
+                    if isinstance(value, (int, float, np.number))
+                    and not isinstance(value, (bool, np.bool_))
+                    else object
+                )
                 history[column] = pd.Series(np.nan, index=history.index, dtype=dtype)
         self.dd.historic_predictions[pair] = history
 
@@ -2283,17 +2293,43 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 )
             },
         }
+        sdk_classes = set(BaseRegressionModel.__mro__) | set(IStrategy.__mro__)
+        implementations = {
+            role: [cls for cls in leaf.__mro__ if cls not in sdk_classes]
+            for role, leaf in (("strategy", type(strategy)), ("model", type(self)))
+        }
+        configuration["implementations"] = {
+            role: [(cls.__module__, cls.__qualname__) for cls in classes]
+            for role, classes in implementations.items()
+        }
+        source_cache: dict[tuple[str, str | Path], bytes] = {}
+        sources: dict[tuple[str, bytes], None] = {}
+
+        def add_source(path: str | Path, snapshot: str | None = None) -> None:
+            key = ("snapshot", snapshot) if snapshot is not None else ("file", Path(path).resolve())
+            if key not in source_cache:
+                source_cache[key] = (
+                    snapshot.encode() if snapshot is not None else Path(path).read_bytes()
+                )
+            sources[(Path(path).name, source_cache[key])] = None
+
+        for classes in implementations.values():
+            leaf = classes[0]
+            for cls in classes:
+                snapshot = cls.__dict__.get("__source__")
+                path = cls.__dict__.get("__file__")
+                if snapshot is None and path is None and cls.__module__ == leaf.__module__:
+                    snapshot = leaf.__dict__.get("__source__")
+                    path = leaf.__dict__.get("__file__")
+                if snapshot is None and path is None:
+                    path = getfile(cls)
+                add_source(path or cls.__module__, snapshot)
+        for path in (Path(__file__), Path(getfile(LabelTransformer)), Path(getfile(fit_regressor))):
+            add_source(path)
         digest.update(json.dumps(configuration, sort_keys=True, default=str).encode())
-        for path in dict.fromkeys(
-            (
-                Path(__file__),
-                Path(getfile(type(strategy))),
-                Path(getfile(LabelTransformer)),
-                Path(getfile(fit_regressor)),
-            )
-        ):
-            digest.update(path.name.encode())
-            digest.update(path.read_bytes())
+        for label, payload in sources:
+            digest.update(label.encode())
+            digest.update(payload)
         columns = [
             column
             for column in prepared
@@ -4178,19 +4214,22 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     ) -> pd.DataFrame:
         """Return pair OHLCV bounded to the current FreqAI prediction time.
 
-        In backtests, ``historic_predictions`` holds the preceding prediction
-        window and ``dk.full_df`` is the full feature frame; the current
-        prediction time is the first ``dk.full_df`` timestamp strictly after the
-        last recorded prediction. Live and dry-run modes rely on the already
-        point-in-time DataProvider frame. This explicit backtest bound is
-        required because DataProvider otherwise exposes the complete historical
-        timerange.
+        An explicit calibration cursor bounds backtest input, including the current candle.
+        Without a cursor, infer the next candle from the produced-prediction history.
+        Live providers already expose their current candle window.
         """
         pair_dataframe = self.data_provider.get_pair_dataframe(
             pair=pair, timeframe=self.config.get("timeframe")
         )
         if self.live or pair_dataframe.empty:
             return pair_dataframe
+
+        if pair in self._calibration_current_candles:
+            current_candle = self._calibration_current_candles[pair]
+            if pd.isna(current_candle):
+                return pair_dataframe.iloc[:0]
+            pair_dates = ensure_datetime_series(pair_dataframe["date"])
+            return pair_dataframe.loc[pair_dates <= current_candle]
 
         history_dates = ensure_datetime_series(self.dd.historic_predictions[pair]["date"])
         if history_dates.empty:

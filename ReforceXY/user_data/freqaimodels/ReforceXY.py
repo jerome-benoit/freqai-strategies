@@ -221,6 +221,8 @@ def _align_historic_predictions(history: pd.DataFrame, dataframe: pd.DataFrame) 
         aligned["do_predict"] = aligned["do_predict"].where(~missing, 0)
     else:
         aligned["do_predict"] = 0
+    if _PRODUCED_COLUMN in aligned:
+        aligned[_PRODUCED_COLUMN] = aligned[_PRODUCED_COLUMN].where(~missing, False)
     return aligned
 
 

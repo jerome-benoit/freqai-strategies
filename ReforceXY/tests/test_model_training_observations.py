@@ -284,7 +284,7 @@ class TrainingObservationsTest(QaTestCase):
                     "close_price": [100.0],
                 }
             )
-            candles = pd.DataFrame({"date": [date]})
+            candles = pd.DataFrame({"date": [date, date + pd.Timedelta(minutes=5)]})
             drawer.set_initial_return_values(pair, pd.DataFrame({"&-action": [99.0]}), candles)
             self.assertNotIn("_freqai_strategies_produced", drawer.historic_predictions[pair])
             self.assertNotIn(
