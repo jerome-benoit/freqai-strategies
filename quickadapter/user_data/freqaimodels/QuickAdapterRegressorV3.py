@@ -23,6 +23,7 @@ from typing import (
     cast,
     get_args,
 )
+from uuid import uuid4
 
 import numpy as np
 import optuna
@@ -2187,7 +2188,14 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         frame["prediction_available"] = availability
         absent = availability.eq(0)
         for column in frame.columns:
-            if column.startswith("&") or column in ("holdout_rmse", "DI_values"):
+            if column.startswith("&") or column in (
+                "holdout_rmse",
+                "DI_values",
+                "DI_cutoff",
+                "DI_value_param1",
+                "DI_value_param2",
+                "DI_value_param3",
+            ):
                 values = pd.to_numeric(frame[column], errors="coerce").astype(float)
                 frame[column] = values.mask(absent)
         if "holdout_rmse" not in frame:
@@ -2330,15 +2338,18 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         for label, payload in sources:
             digest.update(label.encode())
             digest.update(payload)
-        columns = [
-            column
-            for column in prepared
-            if isinstance(column, str)
-            and (column in ("date", "open", "high", "low", "close", "volume") or "%" in column)
-        ]
+        columns = [(column, str(dtype)) for column, dtype in prepared.dtypes.items()]
         digest.update(json.dumps(columns).encode())
-        values = pd.util.hash_pandas_object(prepared[columns], index=False).to_numpy()
-        digest.update(values.data)
+        try:
+            values = pd.util.hash_pandas_object(prepared, index=False).to_numpy()
+        except (TypeError, ValueError):
+            logger.warning(
+                "[%s] Backtest inputs contain unhashable values; using a fresh cache namespace",
+                pair,
+            )
+            digest.update(uuid4().bytes)
+        else:
+            digest.update(values.data)
         return digest.hexdigest()
 
     def start_backtesting(
@@ -2453,7 +2464,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         @wraps(fill)
         def filled(current: FreqaiDataKitchen, frame: pd.DataFrame) -> None:
             recorded = current.full_df
-            fill(frame)
+            fill(prepared)
             result = current.return_dataframe
             aligned = recorded.set_index("date").reindex(
                 pd.DatetimeIndex(ensure_datetime_series(result["date"]))
@@ -2524,7 +2535,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         produced_positions = np.flatnonzero(_produced_prediction_mask(frame))
         metrics = {
             column: frame[column].to_numpy(copy=True)
-            for column in ("holdout_rmse", "label_period_candles", "label_natr_multiplier")
+            for column in ("holdout_rmse",)
             if column in frame
         }
         self._backtest_calibration_starts.pop(pair, None)
@@ -2553,13 +2564,16 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     def predict(
         self, unfiltered_df: pd.DataFrame, dk: FreqaiDataKitchen, **kwargs
     ) -> tuple[pd.DataFrame, NDArray[np.int_]]:
-        """Keep missing-feature rejections in addition to the SDK outlier rejections."""
+        """Reject incomplete inputs and non-finite outputs in addition to SDK outliers."""
         self._capture_model_metric(dk, dk.pair)
         predictions, status = super().predict(unfiltered_df, dk, **kwargs)
-        missing = dk.data["filter_drop_index_prediction"].to_numpy(dtype=np.int_)
-        np.subtract(status, missing, out=status)
+        missing = dk.data["filter_drop_index_prediction"].to_numpy(dtype=bool)
+        finite = np.isfinite(predictions.to_numpy(dtype=float)).all(axis=1)
+        invalid = missing | ~finite
+        expired = status == 2
+        np.subtract(status, invalid & ~expired, out=status)
         dk.do_predict = status
-        dk.__dict__["_quickadapter_prediction_produced"] = np.logical_not(missing)
+        dk.__dict__["_quickadapter_prediction_produced"] = ~invalid & ~expired
         return predictions, status
 
     def define_data_pipeline(self, threads: int = -1) -> Pipeline:
@@ -4184,9 +4198,6 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             # The replay cursor supplies original per-candle metadata in constant time.
             current_metrics = self._backtest_current_metrics.get(pair, {})
             current_holdout_rmse = current_metrics.get("holdout_rmse", np.inf)
-            for column in ("label_period_candles", "label_natr_multiplier"):
-                if column in current_metrics:
-                    dk.data["extra_returns_per_train"][column] = current_metrics[column]
         elif pair not in self._session_fitted_pairs:
             current_holdout_rmse = self._loaded_holdout_rmse.get(pair)
             if (

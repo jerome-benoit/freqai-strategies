@@ -5,8 +5,10 @@ import sys
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import numpy as np
+import optuna
 import pandas as pd
 from freqtrade.enums import RunMode
 from freqtrade.freqai.data_kitchen import FreqaiDataKitchen
@@ -19,6 +21,7 @@ from qa_support import (
     CONFIG_TEMPLATE,
     PAIR,
     QaTestCase,
+    _merge,
     model_config,
     ohlcv_frame,
     temporary_directory,
@@ -98,6 +101,66 @@ class PredictionValidityTest(QaTestCase):
             np.testing.assert_array_equal(
                 kitchen.__dict__["_quickadapter_prediction_produced"], [True, False, True]
             )
+
+    def test_nonfinite_backend_outputs_cannot_enter_calibration(self):
+        for threshold in (0, 10):
+            with self.subTest(di_threshold=threshold), temporary_directory() as directory:
+                model, kitchen, training = trained_regressor(directory, threshold)
+                native_predict = model.model.predict
+                encoded_zero, _, _ = kitchen.label_pipeline.transform(pd.DataFrame({LABEL: [0.0]}))
+                for value in (0.0, np.nan, np.inf, -np.inf):
+                    for missing in (False, True):
+                        with self.subTest(output=value, missing_input=missing):
+                            inputs = training.iloc[30:33].copy()
+                            if missing:
+                                inputs.iloc[1, inputs.columns.get_loc("%-x")] = np.nan
+                            if threshold:
+                                inputs.iloc[1, inputs.columns.get_loc("%-lag")] = 1e6
+                            backend_value = encoded_zero[LABEL].iloc[0] if value == 0 else value
+
+                            def damaged(
+                                features,
+                                *args,
+                                replacement=backend_value,
+                                native=native_predict,
+                                **kwargs,
+                            ):
+                                values = np.array(native(features, *args, **kwargs), copy=True)
+                                values[1] = replacement
+                                return values
+
+                            with patch.object(model.model, "predict", side_effect=damaged):
+                                predictions, status = model.predict(inputs, kitchen)
+
+                            invalid = missing or not np.isfinite(value)
+                            expected_status = 1 - int(bool(threshold)) - int(invalid)
+                            np.testing.assert_array_equal(status, [1, expected_status, 1])
+                            produced = kitchen.__dict__["_quickadapter_prediction_produced"]
+                            np.testing.assert_array_equal(produced, [True, not invalid, True])
+                            history = pd.DataFrame(
+                                {
+                                    "date_pred": inputs["date"].to_numpy(),
+                                    LABEL: predictions[LABEL].to_numpy(),
+                                    "do_predict": status,
+                                    _PRODUCED_PREDICTION_COLUMN: produced,
+                                }
+                            )
+                            model._calibration_current_candles[PAIR] = inputs["date"].iloc[
+                                -1
+                            ] + pd.Timedelta(minutes=5)
+                            eligible = model._calibration_history(kitchen, PAIR, history, 3)
+                            expected_dates = inputs["date"].iloc[[0, 2] if invalid else [0, 1, 2]]
+                            self.assertEqual(
+                                eligible["date_pred"].tolist(), expected_dates.tolist()
+                            )
+                            public = model._normalise_prediction_returns(history.copy())
+                            np.testing.assert_allclose(
+                                public["prediction_available"], [1, 0 if invalid else 1, 1]
+                            )
+                            if invalid:
+                                self.assertTrue(pd.isna(public[LABEL].iloc[1]))
+                            else:
+                                self.assertAlmostEqual(public[LABEL].iloc[1], 0.0)
 
     def test_loaded_model_metric_survives_missing_history_and_bootstrap(self):
         with temporary_directory() as directory:
@@ -264,7 +327,14 @@ class PredictionTransportTest(QaTestCase):
 
     def test_native_no_model_return_does_not_expose_zero_predictions(self):
         with temporary_directory() as directory:
-            config = model_config(directory, freqai={"optuna_hyperopt": {"enabled": False}})
+            fields = ("DI_cutoff", "DI_value_param1", "DI_value_param2", "DI_value_param3")
+            config = model_config(
+                directory,
+                freqai={
+                    "optuna_hyperopt": {"enabled": False},
+                    "extra_returns_per_train": dict.fromkeys(fields, 2.0),
+                },
+            )
             model = QuickAdapterRegressorV3(config=config)
             kitchen = FreqaiDataKitchen(config, live=True, pair=PAIR)
             frame = ohlcv_frame(np.full(3, 100.0))
@@ -279,6 +349,42 @@ class PredictionTransportTest(QaTestCase):
             )
             self.assertTrue(kitchen.return_dataframe[LABEL].isna().all())
             self.assertTrue(kitchen.return_dataframe["holdout_rmse"].isna().all())
+            for column in fields:
+                self.assertTrue(kitchen.return_dataframe[column].isna().all())
+            payload = RPC._convert_dataframe_to_dict(
+                "QuickAdapterV3",
+                PAIR,
+                "5m",
+                kitchen.return_dataframe.copy(),
+                frame["date"].iloc[-1].to_pydatetime(),
+                None,
+                [],
+            )
+            for column in fields:
+                position = payload["columns"].index(column)
+                self.assertEqual([row[position] for row in payload["data"]], [None] * 3)
+
+    def test_di_diagnostics_keep_real_and_legacy_zeros_but_not_expired_values(self):
+        with temporary_directory() as directory:
+            model = QuickAdapterRegressorV3(
+                config=model_config(directory, freqai={"optuna_hyperopt": {"enabled": False}})
+            )
+            fields = ("DI_cutoff", "DI_value_param1", "DI_value_param2", "DI_value_param3")
+            frame = pd.DataFrame(
+                {
+                    "do_predict": [0, 1, 2, 0],
+                    LABEL: [0.0] * 4,
+                    _PRODUCED_PREDICTION_COLUMN: [True, True, True, np.nan],
+                    **dict.fromkeys(fields, 0.0),
+                }
+            )
+
+            result = model._normalise_prediction_returns(frame)
+
+            self.assertEqual(result["do_predict"].tolist(), [0, 1, 2, 0])
+            np.testing.assert_allclose(result["prediction_available"], [1, 1, 0, np.nan])
+            for column in (LABEL, *fields):
+                np.testing.assert_allclose(result[column], [0, 0, np.nan, 0])
 
     def test_native_plotly_draws_real_zero_and_missing_prediction_gaps(self):
         with temporary_directory() as directory:
@@ -405,32 +511,36 @@ class BacktestContractsTest(QaTestCase):
         model_name: str = "QuickAdapterRegressorV3",
         strategy_path: Path | None = None,
         model_path: Path | None = None,
+        freqai_overrides: dict | None = None,
     ):
         frame = frame.copy()
         frame["date"] = pd.to_datetime(frame["date"], utc=True)
         config = model_config(
             directory,
-            freqai={
-                "continual_learning": False,
-                "save_backtest_models": True,
-                "activate_tensorboard": False,
-                "fit_live_predictions_candles": 12,
-                "label_weighting": {"strategy": weighting},
-                "optuna_hyperopt": {"enabled": False},
-                "feature_parameters": {
-                    "indicator_periods_candles": [4, 8],
-                    "include_shifted_candles": 0,
-                    "buffer_train_data_candles": 0,
-                    "causal_mode": True,
+            freqai=_merge(
+                {
+                    "continual_learning": False,
+                    "save_backtest_models": True,
+                    "activate_tensorboard": False,
+                    "fit_live_predictions_candles": 12,
+                    "label_weighting": {"strategy": weighting},
+                    "optuna_hyperopt": {"enabled": False},
+                    "feature_parameters": {
+                        "indicator_periods_candles": [4, 8],
+                        "include_shifted_candles": 0,
+                        "buffer_train_data_candles": 0,
+                        "causal_mode": True,
+                    },
+                    "data_split_parameters": {"test_size": 0.2, "shuffle": False},
+                    "model_training_parameters": {
+                        "n_estimators": 3,
+                        "n_jobs": 1,
+                        "verbosity": 0,
+                        "random_state": 7,
+                    },
                 },
-                "data_split_parameters": {"test_size": 0.2, "shuffle": False},
-                "model_training_parameters": {
-                    "n_estimators": 3,
-                    "n_jobs": 1,
-                    "verbosity": 0,
-                    "random_state": 7,
-                },
-            },
+                freqai_overrides or {},
+            ),
         )
         config.update(
             runmode=RunMode.BACKTEST,
@@ -453,7 +563,142 @@ class BacktestContractsTest(QaTestCase):
         kitchen = FreqaiDataKitchen(config, live=False, pair=PAIR)
         model.dk = kitchen
         model.start_backtesting(frame, {"pair": PAIR}, kitchen, strategy)
+        kitchen.return_dataframe = kitchen.remove_features_from_df(kitchen.return_dataframe)
         return kitchen
+
+    def test_replay_returns_effective_parameters_in_fresh_and_cached_backtests(self):
+        with temporary_directory() as directory:
+            frame = ohlcv_frame(
+                100 + 8 * np.sin(np.arange(720) / 6) + 2 * np.sin(np.arange(720) / 23)
+            )
+            overrides = {
+                "feature_parameters": {"label_period_candles": 24, "label_natr_multiplier": 7.0},
+                "extra_returns_per_train": {
+                    "label_period_candles": 18,
+                    "label_natr_multiplier": 10.5,
+                },
+            }
+            for cached in (False, True):
+                with self.subTest(cached=cached):
+                    kitchen = self._run_backtest(directory, frame, freqai_overrides=overrides)
+                    result = kitchen.return_dataframe
+                    produced = result.loc[result["prediction_available"].eq(1)]
+                    np.testing.assert_array_equal(produced["label_period_candles"], 24)
+                    np.testing.assert_array_equal(produced["label_natr_multiplier"], 7.0)
+                    self.assertEqual(
+                        produced["date"].tolist(),
+                        pd.date_range("2024-01-02", periods=288, freq="5min", tz="UTC").tolist(),
+                    )
+
+    def test_real_label_hpo_replay_matches_live_parameters_and_keeps_window_rmse(self):
+        with temporary_directory() as directory:
+            config = model_config(
+                directory,
+                freqai={
+                    "fit_live_predictions_candles": 864,
+                    "feature_parameters": {
+                        "label_period_candles": 18,
+                        "label_natr_multiplier": 10.5,
+                    },
+                    "optuna_hyperopt": {
+                        "enabled": False,
+                        "n_trials": 1,
+                        "n_jobs": 1,
+                        "timeout": 30,
+                        "warm_start": False,
+                    },
+                },
+            )
+            config.update(timerange="20240102-20240103", config_files=[str(CONFIG_TEMPLATE)])
+            model = QuickAdapterRegressorV3(config=config)
+            model.live = False
+            model._optuna_hyperopt = True
+            model._optuna_label_candle[PAIR] = 0
+            raw = ohlcv_frame(100 + 4 * np.sin(np.arange(600) / 4))
+            raw["date"] = pd.to_datetime(raw["date"], utc=True)
+            model.data_provider = SimpleNamespace(get_pair_dataframe=lambda **kwargs: raw)
+            chosen = {
+                "label_period_candles": model._min_label_period_candles,
+                "label_natr_multiplier": model._min_label_natr_multiplier,
+            }
+
+            def create_study(**kwargs):
+                study = optuna.create_study(
+                    directions=kwargs["directions"], sampler=optuna.samplers.RandomSampler(seed=7)
+                )
+                study.enqueue_trial(chosen)
+                return study
+
+            kitchen = FreqaiDataKitchen(config, live=False, pair=PAIR)
+            kitchen.label_list = [LABEL]
+            kitchen.full_df = raw.iloc[500:504][["date"]].reset_index(drop=True)
+            kitchen.full_df[LABEL] = [-0.2, 0.1, 0.4, -0.3]
+            kitchen.full_df["do_predict"] = 1
+            kitchen.full_df[_PRODUCED_PREDICTION_COLUMN] = True
+            kitchen.full_df["holdout_rmse"] = [0.1, 0.2, 0.3, 0.4]
+            kitchen.full_df["label_period_candles"] = 18
+            kitchen.full_df["label_natr_multiplier"] = 10.5
+            model.dd.get_pair_dict_info(PAIR)
+
+            with patch.object(model, "optuna_create_study", side_effect=create_study):
+                model.backtesting_fit_live_predictions(kitchen)
+
+            self.assertEqual(model.get_optuna_params(PAIR, "label"), chosen)
+            for column, value in chosen.items():
+                np.testing.assert_array_equal(kitchen.full_df[column], value)
+            np.testing.assert_allclose(kitchen.full_df["holdout_rmse"], [0.1, 0.2, 0.3, 0.4])
+            model.live = True
+            model._optuna_hyperopt = False
+            model.fit_live_predictions(kitchen, PAIR)
+            for column, value in chosen.items():
+                self.assertEqual(kitchen.data["extra_returns_per_train"][column], value)
+
+    def test_external_target_input_change_isolates_models_and_predictions(self):
+        with temporary_directory() as directory:
+            implementations = directory / "implementations"
+            implementations.mkdir()
+            (implementations / "funding_strategy.py").write_text(
+                "from QuickAdapterV3 import QuickAdapterV3\n"
+                "class FundingStrategy(QuickAdapterV3):\n"
+                "    def set_freqai_targets(self, dataframe, metadata, **kwargs):\n"
+                "        result = super().set_freqai_targets(dataframe, metadata, **kwargs)\n"
+                "        result['&s-extrema'] *= result['funding_rate']\n"
+                "        return result\n"
+            )
+            frame = ohlcv_frame(
+                100 + 8 * np.sin(np.arange(720) / 6) + 2 * np.sin(np.arange(720) / 23)
+            )
+            frame["funding_rate"] = 1.0
+            options = {"strategy_name": "FundingStrategy", "strategy_path": implementations}
+            first = self._run_backtest(directory / "shared", frame, **options)
+            frame["funding_rate"] = -1.0
+
+            changed = self._run_backtest(directory / "shared", frame, **options)
+            fresh = self._run_backtest(directory / "fresh", frame, **options)
+            cached = self._run_backtest(directory / "shared", frame, **options)
+
+            self.assertNotEqual(first.data_path.parent, changed.data_path.parent)
+            self.assertEqual(changed.data_path.parent, cached.data_path.parent)
+            pd.testing.assert_frame_equal(changed.return_dataframe, fresh.return_dataframe)
+            pd.testing.assert_frame_equal(cached.return_dataframe, fresh.return_dataframe)
+            self.assertFalse(
+                np.allclose(
+                    first.return_dataframe[LABEL], fresh.return_dataframe[LABEL], equal_nan=True
+                )
+            )
+
+    def test_native_orderflow_structures_use_isolated_backtest_namespaces(self):
+        with temporary_directory() as directory:
+            frame = ohlcv_frame(
+                100 + 8 * np.sin(np.arange(720) / 6) + 2 * np.sin(np.arange(720) / 23)
+            )
+            frame["orderflow"] = [{100.0: {"bid": 1.0, "ask": 2.0}} for _ in range(len(frame))]
+
+            first = self._run_backtest(directory, frame)
+            second = self._run_backtest(directory, frame)
+
+            self.assertNotEqual(first.data_path.parent, second.data_path.parent)
+            pd.testing.assert_frame_equal(first.return_dataframe, second.return_dataframe)
 
     def test_native_class_identity_isolates_cached_predictions_and_model_reload(self):
         with temporary_directory() as directory:
