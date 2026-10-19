@@ -470,7 +470,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     https://github.com/sponsors/robcaulk
     """
 
-    version = "3.13.0-rc.15"
+    version = "3.13.0-rc.16"
 
     _CALIBRATION_START_KEY: Final[str] = "quickadapter_calibration_start"
     _DEPLOYMENT_COORDINATE_MARKER_KEY: Final[str] = "quickadapter_deployment_coordinates"
