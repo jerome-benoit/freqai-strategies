@@ -97,7 +97,9 @@ from Utils import (
     LabelWeightSupportError,
     OptunaNamespace,
     Regressor,
+    _NumericValidator,
     _optuna_quarantine_path,
+    coerce_finite_float,
     compose_sample_weights,
     ensure_datetime_series,
     enum_error_message,
@@ -740,9 +742,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
     @staticmethod
     def _coerce_int(value: Any, name: str, *, minimum: int) -> int:
-        if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+        validator = _NumericValidator(min_value=minimum, require_int=True)
+        if not validator(value):
             raise ValueError(
-                f"Invalid data_split_parameters.{name} value {value!r}: must be int >= {minimum}"
+                f"Invalid data_split_parameters.{name} value {value!r}: {validator.message(name)}"
             )
         return value
 
@@ -1114,7 +1117,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
     @staticmethod
     def _validate_scalar(
-        value: float | None,
+        value: Any,
         *,
         ctx: str,
         mode: ValidationMode,
@@ -1123,28 +1126,19 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     ) -> float | None:
         if value is None:
             return None
-        if mode == _VALIDATION_MODES[2]:  # "none"
-            return (
-                float(value)
-                if (np.isfinite(value) and (predicate is None or predicate(value)))
-                else None
-            )
-
-        if not np.isfinite(value):
-            msg = f"Invalid {ctx} value {value!r}: must be finite"
-            if mode == _VALIDATION_MODES[1]:  # "raise"
-                raise ValueError(msg)
-            logger.warning(f"{msg}, using default")
-            return None
-
-        if predicate is not None and not predicate(value):
+        scalar = coerce_finite_float(value)
+        if scalar is None:
+            msg = f"Invalid {ctx} value {value!r}: must be a finite real number representable as a float"
+        elif predicate is not None and (not predicate(value) or not predicate(scalar)):
             msg = f"Invalid {ctx} value {value!r}: {constraint}"
-            if mode == _VALIDATION_MODES[1]:  # "raise"
-                raise ValueError(msg)
-            logger.warning(f"{msg}, using default")
+        else:
+            return scalar
+        if mode == _VALIDATION_MODES[2]:  # "none"
             return None
-
-        return float(value)
+        if mode == _VALIDATION_MODES[1]:  # "raise"
+            raise ValueError(msg)
+        logger.warning(f"{msg}, using default")
+        return None
 
     @staticmethod
     def _validate_minkowski_p(
@@ -1461,9 +1455,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                     "label_density_n_neighbors",
                     QuickAdapterRegressorV3.LABEL_DENSITY_N_NEIGHBORS_DEFAULT,
                 )
-                if not isinstance(n_neighbors, int) or n_neighbors < 1:
+                validator = _NumericValidator(min_value=1, require_int=True)
+                if not validator(n_neighbors):
                     raise ValueError(
-                        f"Invalid label_density_n_neighbors value {n_neighbors!r}: must be int >= 1"
+                        f"Invalid label_density_n_neighbors value {n_neighbors!r}: "
+                        f"{validator.message('label_density_n_neighbors')}"
                     )
                 config["n_neighbors"] = n_neighbors
 
@@ -1476,12 +1472,12 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
                 if aggregation_param is not None:
                     if aggregation == QuickAdapterRegressorV3._DENSITY_AGG_QUANTILE:
-                        QuickAdapterRegressorV3._validate_quantile_q(
+                        aggregation_param = QuickAdapterRegressorV3._validate_quantile_q(
                             aggregation_param,
                             ctx="label_density_aggregation_param",
                         )
                     elif aggregation == QuickAdapterRegressorV3._DENSITY_AGG_POWER_MEAN:
-                        QuickAdapterRegressorV3._validate_power_mean_p(
+                        aggregation_param = QuickAdapterRegressorV3._validate_power_mean_p(
                             aggregation_param,
                             ctx="label_density_aggregation_param",
                         )
@@ -1520,15 +1516,18 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         label_p_order = self.ft_params.get("label_p_order")
         if label_weights is not None and not all(np.isfinite(float(w)) for w in label_weights):
             raise ValueError(f"label_weights contains non-finite values: {label_weights!r}")
-        if label_p_order is not None and not np.isfinite(float(label_p_order)):
-            raise ValueError(f"label_p_order is non-finite: {label_p_order!r}")
+        label_p_order = QuickAdapterRegressorV3._validate_scalar(
+            label_p_order,
+            ctx="label_p_order",
+            mode=_VALIDATION_MODES[1],  # "raise"
+        )
         return {
             "schema_version": _OPTUNA_LABEL_SELECTION_SCHEMA_VERSION,
             "method_config": self._resolve_label_method_config(label_method),
             "label_weights": (
                 [float(w) for w in label_weights] if label_weights is not None else None
             ),
-            "label_p_order": (float(label_p_order) if label_p_order is not None else None),
+            "label_p_order": label_p_order,
         }
 
     @cached_property
@@ -2122,14 +2121,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     @staticmethod
     def _coerce_holdout_rmse(value: Any) -> float:
         """Keep genuine zero error; negative, missing and non-finite scores are unavailable."""
-        if (
-            isinstance(value, (int, float, np.integer, np.floating))
-            and not isinstance(value, (bool, np.bool_))
-            and np.isfinite(value)
-            and value >= 0
-        ):
-            return float(value)
-        return np.inf
+        score = coerce_finite_float(value)
+        return score if score is not None and value >= 0 else np.inf
 
     @staticmethod
     def _kitchen_model_identity(dk: FreqaiDataKitchen) -> tuple[str, str]:
@@ -4336,7 +4329,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
     @staticmethod
     def optuna_validate_value(value: Any) -> float | None:
-        return value if isinstance(value, (int, float)) and np.isfinite(value) else None
+        return coerce_finite_float(value)
 
     def min_max_pred(
         self,
@@ -4502,16 +4495,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         fallback: float,
     ) -> float:
         try:
-            reduced = reducer(pred_label)
+            reduced = coerce_finite_float(reducer(pred_label))
         except Exception:
-            reduced = None
-        if (
-            reduced is not None
-            and isinstance(reduced, (int, float, np.number))
-            and np.isfinite(reduced)
-        ):
-            return float(reduced)
-        return fallback
+            return fallback
+        return fallback if reduced is None else reduced
 
     # ±2.0 fallbacks are out-of-[-1, 1] normalized-range sentinels.
     @staticmethod

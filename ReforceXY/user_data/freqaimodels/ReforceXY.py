@@ -441,6 +441,15 @@ class ReforceXY(BaseReinforcementLearningModel):
 
     DEFAULT_BASE_FACTOR: Final[float] = 100.0
     DEFAULT_DISCOUNT_GAMMA: Final[float] = 0.95
+    DEFAULT_SEED: Final[int] = 42
+    DEFAULT_OPTUNA_SEED: Final[int] = 42
+    DEFAULT_N_ENVS: Final[int] = 1
+    DEFAULT_N_EVAL_ENVS: Final[int] = 1
+    DEFAULT_FRAME_STACKING: Final[int] = 0
+    DEFAULT_N_EVAL_STEPS: Final[int] = 10_000
+    DEFAULT_N_EVAL_EPISODES: Final[int] = 5
+    DEFAULT_TENSORBOARD_THROTTLE: Final[int] = 1
+    DEFAULT_OPTUNA_PURGE_PERIOD: Final[int] = 0
 
     DEFAULT_MAX_TRADE_DURATION_CANDLES: Final[int] = 128
     DEFAULT_IDLE_DURATION_MULTIPLIER: Final[int] = 4
@@ -592,16 +601,20 @@ class ReforceXY(BaseReinforcementLearningModel):
         self.recurrent: bool = self.model_type == ReforceXY._MODEL_TYPES[1]  # "RecurrentPPO"
         self.lr_schedule: bool = self.rl_config.get("lr_schedule", False)
         self.cr_schedule: bool = self.rl_config.get("cr_schedule", False)
-        self.n_envs: int = self.rl_config.get("n_envs", 1)
-        self.n_eval_envs: int = self.rl_config.get("n_eval_envs", 1)
+        self.n_envs: int = self.rl_config.get("n_envs", ReforceXY.DEFAULT_N_ENVS)
+        self.n_eval_envs: int = self.rl_config.get("n_eval_envs", ReforceXY.DEFAULT_N_EVAL_ENVS)
         self.multiprocessing: bool = self.rl_config.get("multiprocessing", False)
         self.eval_multiprocessing: bool = self.rl_config.get("eval_multiprocessing", False)
-        self.frame_stacking: int = self.rl_config.get("frame_stacking", 0)
-        self.n_eval_steps: int = self.rl_config.get("n_eval_steps", 10_000)
-        self.n_eval_episodes: int = self.rl_config.get("n_eval_episodes", 5)
+        self.frame_stacking: int = self.rl_config.get(
+            "frame_stacking", ReforceXY.DEFAULT_FRAME_STACKING
+        )
+        self.n_eval_steps: int = self.rl_config.get("n_eval_steps", ReforceXY.DEFAULT_N_EVAL_STEPS)
+        self.n_eval_episodes: int = self.rl_config.get(
+            "n_eval_episodes", ReforceXY.DEFAULT_N_EVAL_EPISODES
+        )
         self.max_no_improvement_evals: int = self.rl_config.get("max_no_improvement_evals", 0)
         self.min_evals: int = self.rl_config.get("min_evals", 0)
-        self.rl_config.setdefault("tensorboard_throttle", 1)
+        self.rl_config.setdefault("tensorboard_throttle", ReforceXY.DEFAULT_TENSORBOARD_THROTTLE)
         self.plot_new_best: bool = self.rl_config.get("plot_new_best", False)
         self.check_envs: bool = self.rl_config.get("check_envs", True)
         self.progressbar_callback: ProgressBarCallback | None = None
@@ -615,7 +628,9 @@ class ReforceXY(BaseReinforcementLearningModel):
         self.optuna_timeout_hours: float = self.rl_config_optuna.get("timeout_hours", 0)
         self.optuna_n_trials: int = self.rl_config_optuna.get("n_trials", 100)
         self.optuna_n_startup_trials: int = self.rl_config_optuna.get("n_startup_trials", 15)
-        self.optuna_purge_period: int = int(self.rl_config_optuna.get("purge_period", 0))
+        self.optuna_purge_period: int = int(
+            self.rl_config_optuna.get("purge_period", ReforceXY.DEFAULT_OPTUNA_PURGE_PERIOD)
+        )
         self.optuna_eval_callback: MaskableTrialEvalCallback | None = None
         self._model_params_cache: dict[str, Any] | None = None
         self._frame_buffers: dict[str, tuple[Any, deque[NDArray[np.float32]]]] = {}
@@ -861,14 +876,19 @@ class ReforceXY(BaseReinforcementLearningModel):
         function will set them to proper values and warn them
         """
         if not isinstance(self.n_envs, int) or self.n_envs < 1:
-            logger.warning("Config [global]: n_envs=%r invalid; defaulting to 1", self.n_envs)
-            self.n_envs = 1
+            logger.warning(
+                "Config [global]: n_envs=%r invalid; defaulting to %d",
+                self.n_envs,
+                ReforceXY.DEFAULT_N_ENVS,
+            )
+            self.n_envs = ReforceXY.DEFAULT_N_ENVS
         if not isinstance(self.n_eval_envs, int) or self.n_eval_envs < 1:
             logger.warning(
-                "Config [global]: n_eval_envs=%r invalid; defaulting to 1",
+                "Config [global]: n_eval_envs=%r invalid; defaulting to %d",
                 self.n_eval_envs,
+                ReforceXY.DEFAULT_N_EVAL_ENVS,
             )
-            self.n_eval_envs = 1
+            self.n_eval_envs = ReforceXY.DEFAULT_N_EVAL_ENVS
         if self.multiprocessing and self.n_envs <= 1:
             logger.warning(
                 "Config [global]: multiprocessing=True requires n_envs=%d>1; defaulting to False",
@@ -888,10 +908,11 @@ class ReforceXY(BaseReinforcementLearningModel):
             self.plot_new_best = False
         if not isinstance(self.frame_stacking, int) or self.frame_stacking < 0:
             logger.warning(
-                "Config [global]: frame_stacking=%r invalid; defaulting to 0",
+                "Config [global]: frame_stacking=%r invalid; defaulting to %d",
                 self.frame_stacking,
+                ReforceXY.DEFAULT_FRAME_STACKING,
             )
-            self.frame_stacking = 0
+            self.frame_stacking = ReforceXY.DEFAULT_FRAME_STACKING
         if self.frame_stacking == 1:
             logger.warning(
                 "Config [global]: frame_stacking=1 equivalent to no stacking; defaulting to 0"
@@ -899,22 +920,25 @@ class ReforceXY(BaseReinforcementLearningModel):
             self.frame_stacking = 0
         if not isinstance(self.n_eval_steps, int) or self.n_eval_steps <= 0:
             logger.warning(
-                "Config [global]: n_eval_steps=%r invalid; defaulting to 10000",
+                "Config [global]: n_eval_steps=%r invalid; defaulting to %d",
                 self.n_eval_steps,
+                ReforceXY.DEFAULT_N_EVAL_STEPS,
             )
-            self.n_eval_steps = 10_000
+            self.n_eval_steps = ReforceXY.DEFAULT_N_EVAL_STEPS
         if not isinstance(self.n_eval_episodes, int) or self.n_eval_episodes <= 0:
             logger.warning(
-                "Config [global]: n_eval_episodes=%r invalid; defaulting to 5",
+                "Config [global]: n_eval_episodes=%r invalid; defaulting to %d",
                 self.n_eval_episodes,
+                ReforceXY.DEFAULT_N_EVAL_EPISODES,
             )
-            self.n_eval_episodes = 5
+            self.n_eval_episodes = ReforceXY.DEFAULT_N_EVAL_EPISODES
         if not isinstance(self.optuna_purge_period, int) or self.optuna_purge_period < 0:
             logger.warning(
-                "Config [global]: purge_period=%r invalid; defaulting to 0",
+                "Config [global]: purge_period=%r invalid; defaulting to %d",
                 self.optuna_purge_period,
+                ReforceXY.DEFAULT_OPTUNA_PURGE_PERIOD,
             )
-            self.optuna_purge_period = 0
+            self.optuna_purge_period = ReforceXY.DEFAULT_OPTUNA_PURGE_PERIOD
         if self.rl_config_optuna.get("continuous", False) and self.optuna_purge_period > 0:
             logger.warning(
                 "Config [global]: purge_period has no effect when continuous=True; defaulting to 0"
@@ -931,13 +955,16 @@ class ReforceXY(BaseReinforcementLearningModel):
                 "enabling add_state_info"
             )
             self.rl_config["add_state_info"] = True
-        tensorboard_throttle = self.rl_config.get("tensorboard_throttle", 1)
+        tensorboard_throttle = self.rl_config.get(
+            "tensorboard_throttle", ReforceXY.DEFAULT_TENSORBOARD_THROTTLE
+        )
         if not isinstance(tensorboard_throttle, int) or tensorboard_throttle < 1:
             logger.warning(
-                "Config [global]: tensorboard_throttle=%r invalid; defaulting to 1",
+                "Config [global]: tensorboard_throttle=%r invalid; defaulting to %d",
                 tensorboard_throttle,
+                ReforceXY.DEFAULT_TENSORBOARD_THROTTLE,
             )
-            self.rl_config["tensorboard_throttle"] = 1
+            self.rl_config["tensorboard_throttle"] = ReforceXY.DEFAULT_TENSORBOARD_THROTTLE
         if self.continual_learning and bool(self.frame_stacking):
             logger.warning(
                 "Config [global]: continual_learning=True incompatible with frame_stacking=%d; defaulting to False",
@@ -1023,7 +1050,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         train_df = data_dictionary["train_features"]
         test_df = data_dictionary["test_features"]
         effective_params = self.get_model_params() if model_params is None else model_params
-        seed = effective_params.get("seed", 42)
+        seed = effective_params.get("seed", ReforceXY.DEFAULT_SEED)
 
         if self.check_envs:
             logger.info("Env [%s]: checking environments", dk.pair)
@@ -1076,7 +1103,7 @@ class ReforceXY(BaseReinforcementLearningModel):
 
         model_params: dict[str, Any] = copy.deepcopy(self.model_training_parameters)
 
-        model_params.setdefault("seed", 42)
+        model_params.setdefault("seed", ReforceXY.DEFAULT_SEED)
         model_params.setdefault("gamma", ReforceXY.DEFAULT_DISCOUNT_GAMMA)
 
         if not self.hyperopt and self.lr_schedule:
@@ -1284,7 +1311,9 @@ class ReforceXY(BaseReinforcementLearningModel):
         if self.activate_tensorboard:
             info_callback = InfoMetricsCallback(
                 actions=Actions,
-                throttle=self.rl_config.get("tensorboard_throttle", 1),
+                throttle=self.rl_config.get(
+                    "tensorboard_throttle", ReforceXY.DEFAULT_TENSORBOARD_THROTTLE
+                ),
                 verbose=verbose,
             )
             callbacks.append(info_callback)
@@ -2277,7 +2306,7 @@ class ReforceXY(BaseReinforcementLearningModel):
                 f"Valid: {', '.join(ReforceXY._SAMPLERS)}"
             )
         sampler = cast("SamplerType", sampler_value)
-        seed = self.rl_config_optuna.get("seed", 42)
+        seed = self.rl_config_optuna.get("seed", ReforceXY.DEFAULT_OPTUNA_SEED)
         match sampler:
             case ReforceXY._SAMPLERS.tpe:
                 logger.info(
@@ -2765,7 +2794,9 @@ class ReforceXY(BaseReinforcementLearningModel):
         trial: Trial | None = None,
         model_params: dict[str, Any] | None = None,
     ) -> tuple[VecEnv, VecEnv | None]:
-        seed: int = self.get_model_params().get("seed", 42) if seed is None else seed
+        seed: int = (
+            self.get_model_params().get("seed", ReforceXY.DEFAULT_SEED) if seed is None else seed
+        )
         if trial is not None:
             seed += trial.number
         set_random_seed(seed)
@@ -2905,7 +2936,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         # Ensure that the sampled parameters take precedence
         params = deepmerge(self.get_model_params(), params)
         params["gamma"] = ReforceXY._resolve_discount_gamma(params)
-        params["seed"] = params.get("seed", 42) + trial.number
+        params["seed"] = params.get("seed", ReforceXY.DEFAULT_SEED) + trial.number
         logger.info("Hyperopt [%s]: trial #%d params: %s", study_name, trial.number, params)
 
         nan_encountered = False
@@ -4670,9 +4701,9 @@ class InfoMetricsCallback(TensorboardCallback):
     Tensorboard callback
     """
 
-    def __init__(self, *args, throttle: int = 1, **kwargs):
+    def __init__(self, *args, throttle: int = ReforceXY.DEFAULT_TENSORBOARD_THROTTLE, **kwargs):
         super().__init__(*args, **kwargs)
-        self.throttle = 1 if throttle < 1 else throttle
+        self.throttle = ReforceXY.DEFAULT_TENSORBOARD_THROTTLE if throttle < 1 else throttle
 
     def _safe_logger_record(
         self, key: str, value: Any, exclude: tuple[str, ...] | None = None
@@ -4703,22 +4734,6 @@ class InfoMetricsCallback(TensorboardCallback):
                     exc_info=True,
                 )
                 pass
-
-    @staticmethod
-    def _build_train_freq(
-        train_freq: TrainFreq | int | tuple[int, ...] | list[int] | None,
-    ) -> int | None:
-        train_freq_val: int | None = None
-        if isinstance(train_freq, TrainFreq) and hasattr(train_freq, "frequency"):
-            if isinstance(train_freq.frequency, int):
-                train_freq_val = train_freq.frequency
-        elif isinstance(train_freq, (tuple, list)) and train_freq:
-            if isinstance(train_freq[0], int):
-                train_freq_val = train_freq[0]
-        elif isinstance(train_freq, int):
-            train_freq_val = train_freq
-
-        return train_freq_val
 
     def _on_training_start(self) -> None:
         lr = getattr(self.model, "learning_rate", None)
@@ -4791,9 +4806,7 @@ class InfoMetricsCallback(TensorboardCallback):
                     "exploration_rate": float(self.model.exploration_rate),
                 }
             )
-            train_freq = InfoMetricsCallback._build_train_freq(
-                getattr(self.model, "train_freq", None)
-            )
+            train_freq = _build_train_freq(getattr(self.model, "train_freq", None))
             if train_freq is not None:
                 hparam_dict.update({"train_freq": train_freq})
             if ReforceXY._MODEL_TYPES[4] in self.model.__class__.__name__:  # "QRDQN"
@@ -5296,14 +5309,17 @@ def _compute_gradient_steps(tf: int, ss: int) -> int:
     return -1
 
 
-def compute_gradient_steps(train_freq: Any, subsample_steps: Any) -> int:
-    tf: int | None = None
+def _build_train_freq(train_freq: Any) -> int | None:
+    """Extract the collection frequency from an SB3 object or constructor value."""
     if isinstance(train_freq, TrainFreq):
-        tf = train_freq.frequency if isinstance(train_freq.frequency, int) else None
+        return train_freq.frequency if isinstance(train_freq.frequency, int) else None
     if isinstance(train_freq, (tuple, list)) and train_freq:
-        tf = train_freq[0] if isinstance(train_freq[0], int) else None
-    elif isinstance(train_freq, int):
-        tf = train_freq
+        return train_freq[0] if isinstance(train_freq[0], int) else None
+    return train_freq if isinstance(train_freq, int) else None
+
+
+def compute_gradient_steps(train_freq: Any, subsample_steps: Any) -> int:
+    tf = _build_train_freq(train_freq)
 
     ss: int | None = subsample_steps if isinstance(subsample_steps, int) else None
 

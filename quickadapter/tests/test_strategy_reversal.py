@@ -4,7 +4,7 @@ import unittest
 
 import numpy as np
 import pandas as pd
-from qa_support import QaTestCase
+from qa_support import QaTestCase, model_config, temporary_directory
 from QuickAdapterV3 import QuickAdapterV3
 
 LONG = QuickAdapterV3._TRADE_LONG
@@ -48,6 +48,44 @@ def frame(closes):
 
 
 class ReversalConfirmationTest(QaTestCase):
+    def test_numpy_candle_precision_preserves_real_reversal_decisions(self):
+        for dtype in (np.float32, np.float64):
+            for side, closes, opens, passing_rate, failing_rate in (
+                (LONG, [100, 102, 104], [99, 101, 103], 110, 104),
+                (SHORT, [100, 98, 96], [101, 99, 97], 90, 96),
+            ):
+                with self.subTest(dtype=dtype, side=side), temporary_directory() as temp:
+                    model = QuickAdapterV3(config=model_config(temp))
+                    model.freqai_info = model.config["freqai"]
+                    model.bot_start()
+                    df = pd.DataFrame(
+                        {
+                            "date": pd.date_range("2026-01-01", periods=3, freq="5min", tz="UTC"),
+                            "open": np.array(opens, dtype=dtype),
+                            "close": np.array(closes, dtype=dtype),
+                            "natr_label_period_candles": np.ones(3, dtype=dtype),
+                            "label_period_candles": np.full(3, 2, dtype=dtype),
+                            "label_natr_multiplier": np.ones(3, dtype=dtype),
+                        }
+                    )
+                    for rate, expected in ((passing_rate, True), (failing_rate, False)):
+                        self.assertEqual(
+                            bool(
+                                self._confirm(
+                                    model,
+                                    df,
+                                    side=side,
+                                    order=ENTRY,
+                                    rate=dtype(rate),
+                                    lookback=1,
+                                    decay=dtype(1),
+                                    lo=dtype(0.5),
+                                    hi=dtype(1),
+                                )
+                            ),
+                            expected,
+                        )
+
     def _confirm(self, model, df, *, side, order, rate, lookback=0, decay=1.0, lo=0.5, hi=1.0):
         return model.reversal_confirmed(
             df,

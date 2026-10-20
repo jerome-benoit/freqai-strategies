@@ -16,6 +16,7 @@ from typing import (
 import numpy as np
 import pandas_ta as pta
 import talib.abstract as ta
+from freqtrade.constants import EntryExit, LongShort
 from freqtrade.enums import TRADE_MODES
 from freqtrade.exchange import (
     timeframe_to_minutes,
@@ -98,9 +99,7 @@ from Utils import (
     zlema,
 )
 
-TradeDirection = Literal["long", "short"]
 InterpolationDirection = Literal["direct", "inverse"]
-OrderType = Literal["entry", "exit"]
 TradingMode = Literal["spot", "margin", "futures"]
 
 DfSignature = tuple[int, datetime.datetime | None]
@@ -111,7 +110,7 @@ CandleThresholdCacheKey = tuple[str, DfSignature, str, int, float, float]
 class _FinalTakeProfitState(TypedDict):
     version: int
     exit_stage: int
-    trade_direction: TradeDirection
+    trade_direction: LongShort
     best_rate: float
     retracement_distance: float
     boundary_candle_date: str
@@ -191,20 +190,20 @@ class QuickAdapterV3(IStrategy):
 
     INTERFACE_VERSION = 3
 
-    _TRADE_DIRECTIONS: Final[tuple[TradeDirection, ...]] = ("long", "short")
-    _TRADE_LONG: Final[str] = _TRADE_DIRECTIONS[0]  # "long"
-    _TRADE_SHORT: Final[str] = _TRADE_DIRECTIONS[1]  # "short"
-    _TRADE_DIRECTIONS_SET: Final[frozenset[TradeDirection]] = frozenset(_TRADE_DIRECTIONS)
+    _TRADE_DIRECTIONS: Final[tuple[LongShort, ...]] = ("long", "short")
+    _TRADE_LONG: Final[LongShort] = _TRADE_DIRECTIONS[0]  # "long"
+    _TRADE_SHORT: Final[LongShort] = _TRADE_DIRECTIONS[1]  # "short"
+    _TRADE_DIRECTIONS_SET: Final[frozenset[LongShort]] = frozenset(_TRADE_DIRECTIONS)
     _INTERPOLATION_DIRECTIONS: Final[tuple[InterpolationDirection, ...]] = (
         "direct",
         "inverse",
     )
     _INTERPOLATION_DIRECT: Final[str] = _INTERPOLATION_DIRECTIONS[0]  # "direct"
     _INTERPOLATION_INVERSE: Final[str] = _INTERPOLATION_DIRECTIONS[1]  # "inverse"
-    _ORDER_TYPES: Final[tuple[OrderType, ...]] = ("entry", "exit")
-    _ORDER_ENTRY: Final[str] = _ORDER_TYPES[0]  # "entry"
-    _ORDER_EXIT: Final[str] = _ORDER_TYPES[1]  # "exit"
-    _ORDER_TYPES_SET: Final[frozenset[OrderType]] = frozenset(_ORDER_TYPES)
+    _ORDER_TYPES: Final[tuple[EntryExit, ...]] = ("entry", "exit")
+    _ORDER_ENTRY: Final[EntryExit] = _ORDER_TYPES[0]  # "entry"
+    _ORDER_EXIT: Final[EntryExit] = _ORDER_TYPES[1]  # "exit"
+    _ORDER_TYPES_SET: Final[frozenset[EntryExit]] = frozenset(_ORDER_TYPES)
     _TRADING_MODES: Final[tuple[TradingMode, ...]] = ("spot", "margin", "futures")
     _TRADING_MODE_SPOT: Final[str] = _TRADING_MODES[0]  # "spot"
     _TRADING_MODE_MARGIN: Final[str] = _TRADING_MODES[1]  # "margin"
@@ -1618,7 +1617,7 @@ class QuickAdapterV3(IStrategy):
         *,
         best_rate: float,
         retracement_distance: float,
-        trade_direction: TradeDirection,
+        trade_direction: LongShort,
     ) -> float | None:
         if (
             not np.isfinite(best_rate)
@@ -1652,7 +1651,7 @@ class QuickAdapterV3(IStrategy):
     def _build_final_take_profit_state(
         *,
         exit_stage: int,
-        trade_direction: TradeDirection,
+        trade_direction: LongShort,
         current_rate: float,
         take_profit_distance: float,
         retracement_fraction: float,
@@ -1705,7 +1704,7 @@ class QuickAdapterV3(IStrategy):
         state: Any,
         *,
         exit_stage: int,
-        trade_direction: TradeDirection,
+        trade_direction: LongShort,
         open_rate: float,
         timeframe: str,
         minimum_candle_date: datetime.datetime,
@@ -2124,7 +2123,7 @@ class QuickAdapterV3(IStrategy):
         self,
         df: DataFrame,
         pair: str,
-        side: TradeDirection,
+        side: LongShort,
         min_natr_multiplier_fraction: float,
         max_natr_multiplier_fraction: float,
         candle_idx: int = -1,
@@ -2181,8 +2180,8 @@ class QuickAdapterV3(IStrategy):
         self,
         df: DataFrame,
         pair: str,
-        side: TradeDirection,
-        order: OrderType,
+        side: LongShort,
+        order: EntryExit,
         rate: float,
         lookback_period_candles: int,
         decay_fraction: float,
@@ -2210,13 +2209,11 @@ class QuickAdapterV3(IStrategy):
             return False
         if order not in QuickAdapterV3._ORDER_TYPES_SET:
             return False
-        if not isinstance(rate, (int, float)) or not np.isfinite(rate):
+        if not is_finite_number(rate):
             return False
         if (
-            not isinstance(min_natr_multiplier_fraction, (int, float))
-            or not isinstance(max_natr_multiplier_fraction, (int, float))
-            or not np.isfinite(min_natr_multiplier_fraction)
-            or not np.isfinite(max_natr_multiplier_fraction)
+            not is_finite_number(min_natr_multiplier_fraction)
+            or not is_finite_number(max_natr_multiplier_fraction)
             or min_natr_multiplier_fraction < 0
             or max_natr_multiplier_fraction < 0
             or min_natr_multiplier_fraction > max_natr_multiplier_fraction
@@ -2232,7 +2229,7 @@ class QuickAdapterV3(IStrategy):
         ):
             return False
         lookback_period_candles = min(lookback_period_candles, max_lookback_period_candles)
-        if not isinstance(decay_fraction, (int, float)):
+        if not is_finite_number(decay_fraction):
             logger.debug(f"[{pair}] Denied {trade_direction} {order}: invalid decay_fraction type")
             return False
         if not (0.0 < decay_fraction <= 1.0):
@@ -2249,7 +2246,7 @@ class QuickAdapterV3(IStrategy):
             max_natr_multiplier_fraction=max_natr_multiplier_fraction,
             candle_idx=-1,
         )
-        current_ok = np.isfinite(current_threshold) and (
+        current_ok = is_finite_number(current_threshold) and (
             (side == QuickAdapterV3._TRADE_LONG and rate > current_threshold)
             or (side == QuickAdapterV3._TRADE_SHORT and rate < current_threshold)
         )
@@ -2270,7 +2267,7 @@ class QuickAdapterV3(IStrategy):
         unmeasurable_history_ok = order == QuickAdapterV3._ORDER_EXIT and current_ok
         for k in range(1, lookback_period_candles + 1):
             close_k = df.iloc[-k].get("close")
-            if not isinstance(close_k, (int, float)) or not np.isfinite(close_k):
+            if close_k is None or not is_finite_number(close_k):
                 return unmeasurable_history_ok
 
             decay_factor = decay_fraction**k
@@ -2290,7 +2287,7 @@ class QuickAdapterV3(IStrategy):
                 max_natr_multiplier_fraction=decayed_max_natr_multiplier_fraction,
                 candle_idx=-(k + 1),
             )
-            if not isinstance(threshold_k, (int, float)) or not np.isfinite(threshold_k):
+            if not is_finite_number(threshold_k):
                 return unmeasurable_history_ok
 
             if (side == QuickAdapterV3._TRADE_LONG and not (close_k > threshold_k)) or (
