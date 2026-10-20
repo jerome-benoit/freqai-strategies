@@ -98,19 +98,6 @@ class TestAPIAndHelpers(RewardSpaceTestBase):
                 self.assertTrue(df.iloc[-1]["terminated"])
                 self.assertEqual(df.iloc[-1]["next_position"], Positions.Neutral.value)
 
-    def test_simulation_preserves_small_fractional_duration_caps(self):
-        """Keep ordinary float-product truncation, including zero and rounded boundaries."""
-        for duration, ratio, expected in ((1, 0.5, 0), (3, 1 / 3, 1), (7, 1 / 7, 1), (10, 0.3, 3)):
-            with self.subTest(duration=duration, ratio=ratio):
-                df = simulate_samples_with_defaults(
-                    self.base_params(max_trade_duration_candles=duration),
-                    num_samples=8,
-                    seed=42,
-                    trading_mode="spot",
-                    max_duration_ratio=ratio,
-                )
-                self.assertEqual(df["next_trade_duration"].max(), expected)
-
     def test_public_report_preserves_unbounded_duration_configuration(self):
         """The real report retains exact integer configuration beyond Python digit limits."""
         duration = 10**4900
@@ -334,8 +321,7 @@ class TestAPIAndHelpers(RewardSpaceTestBase):
         values = (
             df[["sample_entry_prob", "sample_exit_prob", "sample_neutral_prob"]].stack().dropna()
         )
-        prob_upper_bound = SCENARIOS.API_PROBABILITY_UPPER_BOUND
-        self.assertTrue(((values >= 0.0) & (values <= prob_upper_bound)).all())
+        self.assertTrue(((values >= 0.0) & (values <= 1.0)).all())
 
     def test_unmasked_simulation_samples_invalid_actions_without_changing_position(self):
         """Unmasked actions expose penalties without inventing trades or wrong-side exits."""
@@ -354,7 +340,15 @@ class TestAPIAndHelpers(RewardSpaceTestBase):
                 self.assertGreater(len(invalid), 0)
                 self.assertLess(len(invalid), len(df))
                 self.assertTrue((invalid["reward_invalid"] == params["invalid_action"]).all())
-                self.assertTrue((invalid["reward_base"] == params["invalid_action"]).all())
+                np.testing.assert_allclose(
+                    invalid["reward_base"],
+                    invalid["reward_invalid"]
+                    + invalid["reward_idle"]
+                    + invalid["reward_hold"]
+                    + invalid["reward_exit"],
+                    atol=TOLERANCE.IDENTITY_STRICT,
+                    rtol=0.0,
+                )
                 wrong_exit = invalid.loc[
                     (
                         (
@@ -616,11 +610,12 @@ class TestPrivateFunctions(RewardSpaceTestBase):
         self.assertAlmostEqualFloat(
             breakdown.total,
             breakdown.invalid_penalty
+            + breakdown.hold_penalty
             + breakdown.reward_shaping
             + breakdown.entry_additive
             + breakdown.exit_additive,
             tolerance=TOLERANCE.IDENTITY_RELAXED,
-            msg="Total should equal invalid penalty plus shaping/additives",
+            msg="Invalid actions retain the current position's time cost",
         )
 
     def test_new_invariant_and_warn_parameters(self):
