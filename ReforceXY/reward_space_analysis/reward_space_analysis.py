@@ -1101,9 +1101,9 @@ def _compute_pnl_target_coefficient(
     """
     Compute PnL target coefficient based on PnL/target ratio using tanh.
 
-    For nonnegative tunables, amplification ranges from 1 to
-    ``1 + win_reward_factor`` for gains, or
-    ``1 + win_reward_factor * risk_reward_ratio`` for losses.
+    For nonnegative tunables, amplification ranges from 1 to ``1 + win_reward_factor``
+    for gains, or ``1 + win_reward_factor * rr`` for losses. Here ``rr`` is the positive
+    ``risk_reward_ratio``, or ``RISK_REWARD_RATIO_DEFAULT`` otherwise.
     The coefficient rewards trades that exceed pnl_target and penalizes losses
     beyond the risk/reward threshold.
 
