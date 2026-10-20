@@ -575,12 +575,14 @@ class ReforceXY(BaseReinforcementLearningModel):
         *_OPTIMIZER_CLASSES_OPTUNA,
         "adam",
     )
-    _NET_ARCH_SIZES: Final[tuple[NetArchSize, ...]] = (
-        "small",
-        "medium",
-        "large",
-        "extra_large",
-    )
+    # Shared by named architectures and plain-configuration fallbacks.
+    _NET_ARCH_WIDTHS: Final[dict[NetArchSize, int]] = {
+        "small": 128,
+        "medium": 256,
+        "large": 512,
+        "extra_large": 1024,
+    }
+    _NET_ARCH_SIZES: Final[tuple[NetArchSize, ...]] = tuple(_NET_ARCH_WIDTHS)
     _STORAGE_BACKENDS: Final[tuple[StorageBackend, ...]] = ("sqlite", "file")
     _SAMPLERS: Final[_Samplers] = _Samplers()
     _JOURNAL_TAIL_PROBE_BYTES: Final[int] = 64 * 1024
@@ -1177,7 +1179,8 @@ class ReforceXY(BaseReinforcementLearningModel):
         if not model_params.get("policy_kwargs"):
             model_params["policy_kwargs"] = {}
 
-        default_net_arch: list[int] = [128, 128]
+        default_width = ReforceXY._NET_ARCH_WIDTHS[ReforceXY._NET_ARCH_SIZES[0]]
+        default_net_arch: list[int] = [default_width, default_width]
         net_arch: list[int] | dict[str, list[int]] | NetArchSize = model_params.get(
             "policy_kwargs", {}
         ).get("net_arch", default_net_arch)
@@ -5425,34 +5428,13 @@ def get_schedule(
 
 
 def get_net_arch(model_type: str, net_arch_type: NetArchSize) -> list[int] | dict[str, list[int]]:
-    """
-    Get network architecture
-    """
+    """Build only the selected architecture, falling back to the smallest size."""
+    width = ReforceXY._NET_ARCH_WIDTHS.get(
+        net_arch_type, ReforceXY._NET_ARCH_WIDTHS[ReforceXY._NET_ARCH_SIZES[0]]
+    )
     if ReforceXY._MODEL_TYPES[0] in model_type:  # "PPO"
-        return {
-            ReforceXY._NET_ARCH_SIZES[0]: {
-                "pi": [128, 128],
-                "vf": [128, 128],
-            },  # "small"
-            ReforceXY._NET_ARCH_SIZES[1]: {
-                "pi": [256, 256],
-                "vf": [256, 256],
-            },  # "medium"
-            ReforceXY._NET_ARCH_SIZES[2]: {
-                "pi": [512, 512],
-                "vf": [512, 512],
-            },  # "large"
-            ReforceXY._NET_ARCH_SIZES[3]: {
-                "pi": [1024, 1024],
-                "vf": [1024, 1024],
-            },  # "extra_large"
-        }.get(net_arch_type, {"pi": [128, 128], "vf": [128, 128]})
-    return {
-        ReforceXY._NET_ARCH_SIZES[0]: [128, 128],  # "small"
-        ReforceXY._NET_ARCH_SIZES[1]: [256, 256],  # "medium"
-        ReforceXY._NET_ARCH_SIZES[2]: [512, 512],  # "large"
-        ReforceXY._NET_ARCH_SIZES[3]: [1024, 1024],  # "extra_large"
-    }.get(net_arch_type, [128, 128])
+        return {"pi": [width, width], "vf": [width, width]}
+    return [width, width]
 
 
 def get_activation_fn(

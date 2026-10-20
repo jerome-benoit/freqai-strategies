@@ -1517,11 +1517,10 @@ def calculate_reward(
     )
 
     hold_potential_enabled = _get_bool_param(params, "hold_potential_enabled")
-    entry_additive_enabled = (
-        False if exit_mode == "canonical" else _get_bool_param(params, "entry_additive_enabled")
-    )
-    exit_additive_enabled = (
-        False if exit_mode == "canonical" else _get_bool_param(params, "exit_additive_enabled")
+    entry_additive_enabled, exit_additive_enabled, _ = _resolve_additive_enablement(
+        exit_mode,
+        _get_bool_param(params, "entry_additive_enabled"),
+        _get_bool_param(params, "exit_additive_enabled"),
     )
 
     pbrs_enabled = bool(hold_potential_enabled or entry_additive_enabled or exit_additive_enabled)
@@ -2079,8 +2078,12 @@ def _validate_simulation_invariants(df: pd.DataFrame, params: RewardParams) -> N
     # INVARIANT 1: masked sampling must only emit legal actions; unmasked
     # actions may be invalid but cannot change position before terminal liquidation.
     if _get_bool_param(params, "action_masking", True):
-        long_exits = df[(df["action"] == 2.0) & (df["position"] != 1.0)]
-        short_exits = df[(df["action"] == 4.0) & (df["position"] != 0.0)]
+        long_exits = df[
+            (df["action"] == Actions.Long_exit.value) & (df["position"] != Positions.Long.value)
+        ]
+        short_exits = df[
+            (df["action"] == Actions.Short_exit.value) & (df["position"] != Positions.Short.value)
+        ]
         if len(long_exits) > 0:
             raise AssertionError(f"Sim: {len(long_exits)} Long_exit actions without Long position")
         if len(short_exits) > 0:
@@ -2088,8 +2091,13 @@ def _validate_simulation_invariants(df: pd.DataFrame, params: RewardParams) -> N
                 f"Sim: {len(short_exits)} Short_exit actions without Short position"
             )
 
-        long_entries = df[(df["action"] == 1.0) & (df["position"] != 0.5)]
-        short_entries = df[(df["action"] == 3.0) & (df["position"] != 0.5)]
+        long_entries = df[
+            (df["action"] == Actions.Long_enter.value) & (df["position"] != Positions.Neutral.value)
+        ]
+        short_entries = df[
+            (df["action"] == Actions.Short_enter.value)
+            & (df["position"] != Positions.Neutral.value)
+        ]
         if len(long_entries) > 0:
             raise AssertionError(
                 f"Sim: {len(long_entries)} Long_enter actions without Neutral position"
@@ -2108,20 +2116,22 @@ def _validate_simulation_invariants(df: pd.DataFrame, params: RewardParams) -> N
             raise AssertionError(f"Sim: {len(changed_on_invalid)} invalid actions changed position")
 
     # INVARIANT 2: Duration logic
-    neutral_with_trade = df[(df["position"] == 0.5) & (df["trade_duration"] > 0)]
+    neutral_with_trade = df[
+        (df["position"] == Positions.Neutral.value) & (df["trade_duration"] > 0)
+    ]
     if len(neutral_with_trade) > 0:
         raise AssertionError(
             f"Sim: {len(neutral_with_trade)} Neutral positions with non-zero trade_duration"
         )
 
-    inpos_with_idle = df[(df["position"] != 0.5) & (df["idle_duration"] > 0)]
+    inpos_with_idle = df[(df["position"] != Positions.Neutral.value) & (df["idle_duration"] > 0)]
     if len(inpos_with_idle) > 0:
         raise AssertionError(
             f"Sim: {len(inpos_with_idle)} in-position samples with idle_duration > 0"
         )
 
     # INVARIANT 3: Neutral states have zero PnL (simulation design)
-    neutral_with_pnl = df[(df["position"] == 0.5) & (df["pnl"].abs() > eps_pnl)]
+    neutral_with_pnl = df[(df["position"] == Positions.Neutral.value) & (df["pnl"].abs() > eps_pnl)]
     if len(neutral_with_pnl) > 0:
         raise AssertionError(f"Sim: {len(neutral_with_pnl)} Neutral positions with non-zero pnl")
 
@@ -2345,7 +2355,7 @@ def _compute_representativity_stats(
     pnl_target = _resolve_pnl_target(profit_aim, risk_reward_ratio)
     total = len(df)
     # Map numeric position codes to readable labels to avoid casting Neutral (0.5) to 0
-    pos_label_map = {0.0: "Short", 0.5: "Neutral", 1.0: "Long"}
+    pos_label_map = {position.value: position.name for position in Positions}
     pos_labeled = df["position"].map(pos_label_map)
     pos_counts = (
         pos_labeled.value_counts().reindex(["Short", "Neutral", "Long"]).fillna(0).astype(int)
@@ -4823,8 +4833,7 @@ def write_complete_statistical_analysis(
                 f.write("| Feature | KL Div | JS Dist | Wasserstein | KS Stat | KS p-value |\n")
                 f.write("|---------|--------|---------|-------------|---------|------------|\n")
 
-                features = ["pnl", "trade_duration", "idle_duration"]
-                for feature in features:
+                for feature in _DISTRIBUTION_SHIFT_FEATURES:
                     kl = distribution_shift.get(f"{feature}_kl_divergence", np.nan)
                     js = distribution_shift.get(f"{feature}_js_distance", np.nan)
                     ws = distribution_shift.get(f"{feature}_wasserstein", np.nan)
