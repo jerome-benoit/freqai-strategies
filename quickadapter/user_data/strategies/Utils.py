@@ -344,6 +344,17 @@ def is_finite_number(value: Any) -> bool:
     )
 
 
+def coerce_finite_float(value: Any) -> float | None:
+    """Return a finite Python float for a real numeric scalar, otherwise None."""
+    if not is_finite_number(value):
+        return None
+    try:
+        result = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return result if math.isfinite(result) else None
+
+
 @dataclass(frozen=True, slots=True)
 class _EnumValidator:
     valid_values: tuple[str, ...]

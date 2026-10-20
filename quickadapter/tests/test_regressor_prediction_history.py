@@ -598,14 +598,25 @@ class RegressorPredictionHistoryTest(QaTestCase):
             None,
             "0.5",
             [1.0],
+            True,
+            np.bool_(True),
+            1 + 0j,
+            10**500,
+            np.longdouble("1e400"),
         ):
             with self.subTest(value=value):
                 self.assertIsNone(QuickAdapterRegressorV3.optuna_validate_value(value))
 
-    def test_validate_value_passes_finite_numbers_through_unchanged(self):
-        self.assertEqual(QuickAdapterRegressorV3.optuna_validate_value(3), 3)
-        self.assertEqual(QuickAdapterRegressorV3.optuna_validate_value(-1.25), -1.25)
-        self.assertEqual(QuickAdapterRegressorV3.optuna_validate_value(0.0), 0.0)
+    def test_validate_value_preserves_finite_python_and_numpy_scores(self):
+        for value, expected in (
+            (3, 3.0),
+            (-1.25, -1.25),
+            (0.0, 0.0),
+            (np.int64(2), 2.0),
+            (np.float32(0.5), 0.5),
+        ):
+            with self.subTest(value=value):
+                self.assertEqual(QuickAdapterRegressorV3.optuna_validate_value(value), expected)
 
     def test_loaded_holdout_rmse_preserves_valid_scores_and_rejects_invalid_metadata(self):
         for value, expected in (
