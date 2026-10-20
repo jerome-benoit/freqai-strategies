@@ -235,7 +235,8 @@ missing values.
 `holdout_rmse` measures weighted prediction error on the original label scale,
 using the holdout before deployment refit. It is not a trading-profit metric.
 Unknown, negative or non-finite scores appear as gaps, not as a perfect score
-of zero. A genuine zero RMSE remains visible.
+of zero. Numeric values that cannot be converted to a finite float are also
+unavailable. A genuine zero RMSE remains visible.
 
 After a restart, the loaded model's score takes precedence. Only when its
 `holdout_rmse` field is absent does recovery use the score recorded with the

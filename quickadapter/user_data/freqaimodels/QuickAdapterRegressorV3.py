@@ -115,6 +115,7 @@ from Utils import (
     get_min_max_label_period_candles,
     get_optuna_study_model_parameters,
     get_refit_model_training_parameters,
+    is_finite_number,
     label_known_at_lookahead_column_name,
     label_weight_column_name,
     label_weight_known_at_lookahead_column_name,
@@ -2122,14 +2123,13 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     @staticmethod
     def _coerce_holdout_rmse(value: Any) -> float:
         """Keep genuine zero error; negative, missing and non-finite scores are unavailable."""
-        if (
-            isinstance(value, (int, float, np.integer, np.floating))
-            and not isinstance(value, (bool, np.bool_))
-            and np.isfinite(value)
-            and value >= 0
-        ):
-            return float(value)
-        return np.inf
+        if not is_finite_number(value) or value < 0:
+            return np.inf
+        try:
+            score = float(value)
+        except (TypeError, ValueError, OverflowError):
+            return np.inf
+        return score if np.isfinite(score) else np.inf
 
     @staticmethod
     def _kitchen_model_identity(dk: FreqaiDataKitchen) -> tuple[str, str]:

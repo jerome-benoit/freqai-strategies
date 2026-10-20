@@ -3,13 +3,13 @@
   "diagnostics": [
     {
       "endCharacter": 46,
-      "endLine": 1438,
+      "endLine": 1439,
       "file": "quickadapter/user_data/freqaimodels/QuickAdapterRegressorV3.py",
       "message": "Argument of type \"str | None\" cannot be assigned to parameter \"default\" of type \"str\" in function \"_validate_label_selection_metric\"\n  Type \"str | None\" is not assignable to type \"str\"\n    \"None\" is not assignable to \"str\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 24,
-      "startLine": 1438
+      "startLine": 1439
     },
     {
       "endCharacter": 79,

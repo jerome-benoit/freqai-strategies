@@ -607,6 +607,32 @@ class RegressorPredictionHistoryTest(QaTestCase):
         self.assertEqual(QuickAdapterRegressorV3.optuna_validate_value(-1.25), -1.25)
         self.assertEqual(QuickAdapterRegressorV3.optuna_validate_value(0.0), 0.0)
 
+    def test_loaded_holdout_rmse_preserves_valid_scores_and_rejects_invalid_metadata(self):
+        for value, expected in (
+            (0, 0.0),
+            (0.25, 0.25),
+            (np.int64(2), 2.0),
+            (np.float32(0.5), 0.5),
+            (-1, np.inf),
+            (None, np.inf),
+            ("0.25", np.inf),
+            (True, np.inf),
+            (np.bool_(True), np.inf),
+            (np.nan, np.inf),
+            (np.inf, np.inf),
+            (-np.inf, np.inf),
+            (10**500, np.inf),
+            (np.longdouble("1e400"), np.inf),
+        ):
+            with self.subTest(value=value):
+                model, dk, _ = calibrated()
+                model._session_fitted_pairs.clear()
+                dk.data["extra_returns_per_train"]["holdout_rmse"] = value
+
+                model.fit_live_predictions(dk, PAIR)
+
+                self.assertEqual(dk.data["extra_returns_per_train"]["holdout_rmse"], expected)
+
     def test_holdout_rmse_is_infinite_rather_than_a_fabricated_score(self):
         # (in-memory score, persisted replay column, pair already fitted this session)
         for holdout, replay, session_fitted in (
