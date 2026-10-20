@@ -139,7 +139,11 @@ class OptunaLifecycleTest(QaTestCase):
                     self.assertNotEqual(result["gamma"], 0.91)
 
     def test_incompatible_or_missing_study_identity_discards_old_trials(self):
-        for identity in (None, "terminal-liquidation-risk-normalized-trained-policy-v3"):
+        for identity in (
+            None,
+            "terminal-liquidation-risk-normalized-trained-policy-v3",
+            "terminal-liquidation-risk-normalized-trained-policy-v5",
+        ):
             with self.subTest(identity=identity):
                 model = self.model()
                 study = optuna.create_study(

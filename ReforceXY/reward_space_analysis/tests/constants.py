@@ -336,8 +336,14 @@ class TestScenarios:
         API_ENTRY_RATE_DRAWS: Draw count for entry-rate estimation (2000)
         API_MAX_TRADE_DURATION_CANDLES: Max trade duration used in API simulation tests (40)
         API_MAX_DURATION_RATIO: Max duration ratio used in API simulation tests (1.5)
-        API_PROBABILITY_UPPER_BOUND: Upper bound for exposed sampling probabilities (0.9)
         API_EXTREME_BASE_FACTOR: Extreme base_factor used to trigger warning paths (10000000.0)
+        CLOCK_TRADE_SCALE: One-candle reward scale exposing the synthetic clock boundary
+        CLOCK_MIN_DURATION_RATIO: Fractional cap requiring a one-candle physical minimum (0.5)
+        CLOCK_DURATION_RATIO: Two-candle synthetic cap after ordinary truncation (2.5)
+        TERMINAL_ENTRY_FEE: Symmetric fee used by terminal liquidation oracles (0.001)
+        POWER_SUBNORMAL_TAU: Strictly accepted power-kernel tau (1e-6)
+        POWER_SUBNORMAL_DURATION: Ratio with a representable subnormal result (1e16)
+        POWER_UNDERFLOW_DURATION: Ratio whose power-kernel result underflows to zero (1e18)
 
         # CLI smoke parameters
         CLI_NUM_SAMPLES_STANDARD: Default CLI sample size for smoke runs (200)
@@ -375,8 +381,14 @@ class TestScenarios:
     API_ENTRY_RATE_DRAWS: int = 2000
     API_MAX_TRADE_DURATION_CANDLES: int = 40
     API_MAX_DURATION_RATIO: float = 1.5
-    API_PROBABILITY_UPPER_BOUND: float = 0.9
     API_EXTREME_BASE_FACTOR: float = 10_000_000.0
+    CLOCK_TRADE_SCALE: int = 1
+    CLOCK_MIN_DURATION_RATIO: float = 0.5
+    CLOCK_DURATION_RATIO: float = 2.5
+    TERMINAL_ENTRY_FEE: float = 0.001
+    POWER_SUBNORMAL_TAU: float = 1e-6
+    POWER_SUBNORMAL_DURATION: float = 1e16
+    POWER_UNDERFLOW_DURATION: float = 1e18
 
     # CLI smoke parameters
     CLI_NUM_SAMPLES_STANDARD: int = 200

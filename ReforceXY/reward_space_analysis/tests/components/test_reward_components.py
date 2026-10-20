@@ -13,6 +13,7 @@ from reward_space_analysis import (
     _compute_efficiency_coefficient,
     _compute_hold_potential,
     _compute_pnl_target_coefficient,
+    _compute_time_attenuation_coefficient,
     _get_exit_factor,
     _get_float_param,
     get_max_idle_duration_candles,
@@ -39,6 +40,59 @@ pytestmark = pytest.mark.components
 
 
 class TestRewardComponents(RewardSpaceTestBase):
+    def test_invalid_actions_add_to_the_unchanged_states_time_cost(self):
+        """Retain the physical time cost when an invalid action cannot trade."""
+        params = self.base_params(hold_potential_enabled=False)
+        trade_duration = 3 * params["max_trade_duration_candles"]
+        idle_duration = 3 * get_max_idle_duration_candles(params)
+        for position, invalid_action in (
+            (Positions.Neutral, Actions.Long_exit),
+            (Positions.Long, Actions.Long_enter),
+            (Positions.Short, Actions.Short_enter),
+        ):
+            with self.subTest(position=position):
+                common = {
+                    "pnl": 0.0,
+                    "trade_duration": trade_duration,
+                    "idle_duration": idle_duration,
+                    "max_unrealized_profit": 0.0,
+                    "min_unrealized_profit": 0.0,
+                    "position": position,
+                }
+                valid = calculate_reward_with_defaults(
+                    self.make_ctx(**common, action=Actions.Neutral), params, action_masking=False
+                )
+                invalid = calculate_reward_with_defaults(
+                    self.make_ctx(**common, action=invalid_action), params, action_masking=False
+                )
+                self.assertLess(valid.base_reward, params["invalid_action"])
+                self.assertAlmostEqualFloat(
+                    invalid.base_reward,
+                    valid.base_reward + params["invalid_action"],
+                    tolerance=TOLERANCE.IDENTITY_STRICT,
+                )
+                self.assertEqual(invalid.idle_penalty, valid.idle_penalty)
+                self.assertEqual(invalid.hold_penalty, valid.hold_penalty)
+
+    def test_power_kernel_retains_subnormal_values_and_true_underflow(self):
+        """Avoid intermediate overflow without substituting a different kernel."""
+        params = self.base_params(
+            exit_attenuation_mode="power",
+            exit_plateau=False,
+            exit_power_tau=SCENARIOS.POWER_SUBNORMAL_TAU,
+        )
+        ratio = SCENARIOS.POWER_SUBNORMAL_DURATION
+        expected = math.exp(
+            math.log(SCENARIOS.POWER_SUBNORMAL_TAU) / math.log(2) * math.log1p(ratio)
+        )
+        actual = _compute_time_attenuation_coefficient(ratio, params)
+        self.assertGreater(actual, 0.0)
+        # Absolute tolerances would accept the erroneous linear fallback.
+        self.assertTrue(math.isclose(actual, expected, rel_tol=TOLERANCE.RELATIVE, abs_tol=0.0))
+        self.assertEqual(
+            _compute_time_attenuation_coefficient(SCENARIOS.POWER_UNDERFLOW_DURATION, params), 0.0
+        )
+
     def test_hold_potential_computation_finite(self):
         """Test hold potential computation returns finite values."""
         params = {

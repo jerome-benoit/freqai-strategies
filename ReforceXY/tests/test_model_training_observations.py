@@ -97,23 +97,27 @@ class TrainingObservationsTest(QaTestCase):
                 metadata_path = dk.data_path / f"{dk.model_filename}_{METADATA}.json"
                 metadata = json.loads(metadata_path.read_text())
                 current_generation = metadata[model._DEPLOYMENT_COORDINATE_MARKER_KEY]
-                metadata[model._DEPLOYMENT_COORDINATE_MARKER_KEY] = (
-                    "chronological-frozen-pipelines-v2"
-                )
-                metadata_path.write_text(json.dumps(metadata))
-                for cached in (False, True):
-                    with self.subTest(legacy_cached=cached):
-                        model.dd.model_dictionary.clear()
-                        model.dd.meta_data_dictionary.clear()
-                        if cached:
-                            inference = model.dd.load_data(dk.pair, dk)
-                            action, _ = inference.predict(
-                                np.zeros(inference.observation_space.shape, dtype=np.float32),
-                                deterministic=True,
-                            )
-                            self.assertTrue(inference.action_space.contains(action))
-                        with self.assertRaisesRegex(DependencyException, "Reset trained models"):
-                            model._resolve_deployment_state(dk, dk.pair)
+                for legacy_generation in (
+                    "chronological-frozen-pipelines-v2",
+                    "chronological-frozen-pipelines-pbrs-v3",
+                ):
+                    metadata[model._DEPLOYMENT_COORDINATE_MARKER_KEY] = legacy_generation
+                    metadata_path.write_text(json.dumps(metadata))
+                    for cached in (False, True):
+                        with self.subTest(
+                            legacy_generation=legacy_generation, legacy_cached=cached
+                        ):
+                            model.dd.model_dictionary.clear()
+                            model.dd.meta_data_dictionary.clear()
+                            if cached:
+                                inference = model.dd.load_data(dk.pair, dk)
+                                action, _ = inference.predict(
+                                    np.zeros(inference.observation_space.shape, dtype=np.float32),
+                                    deterministic=True,
+                                )
+                                self.assertTrue(inference.action_space.contains(action))
+                            with self.assertRaises(DependencyException):
+                                model._resolve_deployment_state(dk, dk.pair)
                 metadata[model._DEPLOYMENT_COORDINATE_MARKER_KEY] = current_generation
                 metadata_path.write_text(json.dumps(metadata))
                 model.dd.meta_data_dictionary.clear()

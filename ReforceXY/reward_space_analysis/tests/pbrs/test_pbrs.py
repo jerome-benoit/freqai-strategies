@@ -50,6 +50,115 @@ pytestmark = pytest.mark.pbrs
 class TestSimulationParity(RewardSpaceTestBase):
     """Synthetic durations and reports follow runtime transition semantics."""
 
+    def test_synthetic_duration_cap_closes_trades_without_freezing_the_clock(self):
+        """Bound physical trade duration with valid exits and truthful probabilities."""
+        scale = SCENARIOS.CLOCK_TRADE_SCALE
+        params = self.base_params(
+            max_trade_duration_candles=scale,
+            action_masking=False,
+            hold_potential_enabled=True,
+            exit_potential_mode="canonical",
+        )
+        for ratio in (SCENARIOS.CLOCK_MIN_DURATION_RATIO, SCENARIOS.CLOCK_DURATION_RATIO):
+            with self.subTest(ratio=ratio):
+                cap = max(1, int(scale * ratio))
+                df = simulate_samples(
+                    params=params,
+                    num_samples=SCENARIOS.SAMPLE_SIZE_LARGE,
+                    seed=SEEDS.BASE,
+                    base_factor=PARAMS.BASE_FACTOR,
+                    profit_aim=PARAMS.PROFIT_AIM,
+                    risk_reward_ratio=PARAMS.RISK_REWARD_RATIO,
+                    max_duration_ratio=ratio,
+                    trading_mode="futures",
+                    pnl_base_std=PARAMS.PNL_STD,
+                    pnl_duration_vol_scale=PARAMS.PNL_DUR_VOL_SCALE,
+                )
+                age = forced_exits = 0
+                for row in df.itertuples():
+                    self.assertEqual(row.trade_duration, age)
+                    if row.position != Positions.Neutral.value and age == cap:
+                        expected = (
+                            Actions.Long_exit
+                            if row.position == Positions.Long.value
+                            else Actions.Short_exit
+                        )
+                        self.assertEqual(row.action, expected.value)
+                        self.assertEqual(row.sample_exit_prob, 1.0)
+                        self.assertEqual(row.is_invalid, 0.0)
+                        self.assertEqual(row.next_position, Positions.Neutral.value)
+                        forced_exits += 1
+                    if row.next_position == Positions.Neutral.value:
+                        age = 0
+                    elif row.position == Positions.Neutral.value:
+                        age = 1
+                    else:
+                        age += 1
+                    self.assertEqual(row.next_trade_duration, age)
+                    self.assertLessEqual(age, cap)
+                self.assertGreater(forced_exits, 0)
+                verification = reward_space_analysis.verify_pbrs_trajectory(
+                    df, float(params["potential_gamma"])
+                )
+                self.assertTrue(verification["verified"], verification)
+
+    def test_terminal_liquidation_requires_the_actual_marked_next_state(self):
+        """Reject absent/wrong-side states and retain fee-aware terminal entry losses."""
+        fee = SCENARIOS.TERMINAL_ENTRY_FEE
+        params = self.base_params(
+            base_factor=PARAMS.BASE_FACTOR,
+            entry_fee_rate=fee,
+            exit_fee_rate=fee,
+            hold_potential_enabled=False,
+            efficiency_weight=0.0,
+        )
+        for side, action, pnl in (
+            (Positions.Long, Actions.Long_enter, 1 / (1 + fee) ** 2 - 1),
+            (Positions.Short, Actions.Short_enter, 1 - (1 + fee) ** 2),
+        ):
+            with self.subTest(side=side):
+                context = self.make_ctx(
+                    pnl=0.0,
+                    trade_duration=0,
+                    idle_duration=0,
+                    max_unrealized_profit=0.0,
+                    min_unrealized_profit=0.0,
+                    position=Positions.Neutral,
+                    action=action,
+                )
+                with self.assertRaisesRegex(ValueError, "next_context"):
+                    calculate_reward_with_defaults(context, params, terminated=True)
+                wrong = self.make_ctx(
+                    pnl=0.0,
+                    trade_duration=0,
+                    idle_duration=0,
+                    max_unrealized_profit=0.0,
+                    min_unrealized_profit=0.0,
+                    position=Positions.Neutral,
+                    action=Actions.Neutral,
+                )
+                with self.assertRaisesRegex(ValueError, "next_context"):
+                    calculate_reward_with_defaults(
+                        context, params, terminated=True, next_context=wrong
+                    )
+                next_context = self.make_ctx(
+                    pnl=pnl,
+                    trade_duration=1,
+                    idle_duration=0,
+                    max_unrealized_profit=pnl,
+                    min_unrealized_profit=pnl,
+                    position=side,
+                    action=Actions.Neutral,
+                )
+                result = calculate_reward_with_defaults(
+                    context, params, terminated=True, next_context=next_context
+                )
+                self.assertTrue(result.terminal_liquidation)
+                self.assertAlmostEqualFloat(
+                    result.total, PARAMS.BASE_FACTOR * pnl, tolerance=TOLERANCE.IDENTITY_STRICT
+                )
+                self.assertEqual(result.exit_pnl, pnl)
+
     def test_neutral_terminal_closes_stored_potential(self):
         context = reward_space_analysis.RewardContext(
             current_pnl=0.0,

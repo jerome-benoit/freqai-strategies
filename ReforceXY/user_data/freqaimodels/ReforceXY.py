@@ -85,9 +85,45 @@ from stable_baselines3.common.vec_env import (
     DummyVecEnv,
     SubprocVecEnv,
     VecEnv,
+    VecEnvWrapper,
     VecFrameStack,
     VecMonitor,
 )
+from stable_baselines3.common.vec_env.base_vec_env import VecEnvObs, VecEnvStepReturn
+
+
+class _SelectionRewardVecEnv(VecEnvWrapper):
+    """Expose non-PBRS evaluation rewards before VecMonitor aggregates episodes.
+
+    The repository does not use VecNormalize. Adding it requires aligning train
+    and evaluation wrapper chains for SB3's normalization synchronization.
+    """
+
+    def reset(self) -> VecEnvObs:
+        return self.venv.reset()
+
+    def step_wait(self) -> VecEnvStepReturn:
+        observations, _, dones, infos = self.venv.step_wait()
+        rewards = np.fromiter(
+            (float(info["reward_selection"]) for info in infos),
+            dtype=np.float64,
+            count=self.num_envs,
+        )
+        return observations, rewards, dones, infos
+
+
+class _RewardVecMonitor(VecMonitor):
+    """Accumulate native episode scores without narrowing to float32."""
+
+    def __init__(self, venv: VecEnv):
+        super().__init__(venv)
+        self.episode_returns = np.zeros(self.num_envs, dtype=np.float64)
+
+    def reset(self) -> VecEnvObs:
+        observations = super().reset()
+        # VecMonitor.reset recreates float32 storage; keep native reward precision.
+        self.episode_returns = np.zeros(self.num_envs, dtype=np.float64)
+        return observations
 
 
 def _update_eval_best_reward(callback: Any, mean_reward: float, model: Any) -> None:
@@ -437,7 +473,7 @@ class ReforceXY(BaseReinforcementLearningModel):
     _LOG_2: Final[float] = math.log(2.0)
 
     _DEPLOYMENT_COORDINATE_MARKER_KEY: Final[str] = "reforcexy_deployment_coordinates"
-    _DEPLOYMENT_COORDINATE_GENERATION: Final[str] = "chronological-frozen-pipelines-pbrs-v3"
+    _DEPLOYMENT_COORDINATE_GENERATION: Final[str] = "chronological-frozen-pipelines-pbrs-v4"
 
     DEFAULT_BASE_FACTOR: Final[float] = 100.0
     DEFAULT_DISCOUNT_GAMMA: Final[float] = 0.95
@@ -539,12 +575,14 @@ class ReforceXY(BaseReinforcementLearningModel):
         *_OPTIMIZER_CLASSES_OPTUNA,
         "adam",
     )
-    _NET_ARCH_SIZES: Final[tuple[NetArchSize, ...]] = (
-        "small",
-        "medium",
-        "large",
-        "extra_large",
-    )
+    # Shared by named architectures and plain-configuration fallbacks.
+    _NET_ARCH_WIDTHS: Final[dict[NetArchSize, int]] = {
+        "small": 128,
+        "medium": 256,
+        "large": 512,
+        "extra_large": 1024,
+    }
+    _NET_ARCH_SIZES: Final[tuple[NetArchSize, ...]] = tuple(_NET_ARCH_WIDTHS)
     _STORAGE_BACKENDS: Final[tuple[StorageBackend, ...]] = ("sqlite", "file")
     _SAMPLERS: Final[_Samplers] = _Samplers()
     _JOURNAL_TAIL_PROBE_BYTES: Final[int] = 64 * 1024
@@ -561,9 +599,7 @@ class ReforceXY(BaseReinforcementLearningModel):
     _QUARANTINE_TIE_BREAK_LIMIT: Final[int] = 99
     _BEST_PARAMS_LOCK_FILENAME: Final[str] = ".hyperopt-best-params.lock"
     # Bump on objective changes that make persisted trials or best params incompatible.
-    _OPTUNA_OBJECTIVE_IDENTITY: Final[str] = (
-        "terminal-liquidation-risk-normalized-trained-policy-v5"
-    )
+    _OPTUNA_OBJECTIVE_IDENTITY: Final[str] = "unshaped-evaluation-temporal-costs-trained-policy-v6"
     _PPO_N_STEPS: Final[tuple[int, ...]] = (512, 1024, 2048, 4096)
     _PPO_N_STEPS_MIN: Final[int] = min(_PPO_N_STEPS)
     _PPO_N_STEPS_MAX: Final[int] = max(_PPO_N_STEPS)
@@ -1143,7 +1179,8 @@ class ReforceXY(BaseReinforcementLearningModel):
         if not model_params.get("policy_kwargs"):
             model_params["policy_kwargs"] = {}
 
-        default_net_arch: list[int] = [128, 128]
+        default_width = ReforceXY._NET_ARCH_WIDTHS[ReforceXY._NET_ARCH_SIZES[0]]
+        default_net_arch: list[int] = [default_width, default_width]
         net_arch: list[int] | dict[str, list[int]] | NetArchSize = model_params.get(
             "policy_kwargs", {}
         ).get("net_arch", default_net_arch)
@@ -2850,9 +2887,9 @@ class ReforceXY(BaseReinforcementLearningModel):
                 if eval_env is not None:
                     eval_env = VecFrameStack(eval_env, n_stack=self.frame_stacking)
 
-            train_env = VecMonitor(train_env)
+            train_env = _RewardVecMonitor(train_env)
             if eval_env is not None:
-                eval_env = VecMonitor(eval_env)
+                eval_env = _RewardVecMonitor(_SelectionRewardVecEnv(eval_env))
 
             return train_env, eval_env
         except BaseException:
@@ -3160,11 +3197,11 @@ class MyRLEnv(Base5ActionRLEnv):
                 ReforceXY.DEFAULT_MAX_TRADE_DURATION_CANDLES,
             )
         )
+        max_idle_duration = model_reward_parameters.get("max_idle_duration_candles")
         self.max_idle_duration_candles: int = int(
-            model_reward_parameters.get(
-                "max_idle_duration_candles",
-                ReforceXY.DEFAULT_IDLE_DURATION_MULTIPLIER * self.max_trade_duration_candles,
-            )
+            ReforceXY.DEFAULT_IDLE_DURATION_MULTIPLIER * self.max_trade_duration_candles
+            if max_idle_duration is None
+            else max_idle_duration
         )
         # === PBRS COMMON PARAMETERS ===
         self._potential_gamma = ReforceXY._resolve_discount_gamma(
@@ -3796,12 +3833,12 @@ class MyRLEnv(Base5ActionRLEnv):
 
         def _power(dr: float, p: Mapping[str, Any]) -> float:
             tau = p.get("exit_power_tau")
-            if isinstance(tau, (int, float)):
+            if isinstance(tau, (int, float, np.integer, np.floating)):
                 tau = float(tau)
                 alpha = -math.log(tau) / ReforceXY._LOG_2 if 0.0 < tau <= 1.0 else 1.0
             else:
                 alpha = 1.0
-            return 1.0 / math.pow(1.0 + dr, alpha)
+            return math.pow(1.0 + dr, -alpha)
 
         def _half_life(dr: float, p: Mapping[str, Any]) -> float:
             hl = float(p.get("exit_half_life", ReforceXY.DEFAULT_EXIT_HALF_LIFE))
@@ -3925,7 +3962,8 @@ class MyRLEnv(Base5ActionRLEnv):
         self, pnl: float, pnl_target: float, model_reward_parameters: Mapping[str, Any]
     ) -> float:
         """
-        Compute PnL target coefficient (typically 0.5-2.0) using tanh on PnL/target ratio.
+        Compute PnL amplification: [1, 1 + win_reward_factor] for gains,
+        and [1, 1 + win_reward_factor * rr] for losses with nonnegative tunables.
         """
         pnl_target_coefficient = 1.0
 
@@ -4019,10 +4057,9 @@ class MyRLEnv(Base5ActionRLEnv):
         # 1. Invalid action
         if not self.action_masking and not self._is_valid(action):
             self.tensorboard_log("invalid", category="actions")
-            base_reward = float(
+            self._last_invalid_penalty = float(
                 model_reward_parameters.get("invalid_action", ReforceXY.DEFAULT_INVALID_ACTION)
             )
-            self._last_invalid_penalty = float(base_reward)
 
         max_trade_duration = max(1, self.max_trade_duration_candles)
         trade_duration = self.get_trade_duration()
@@ -4032,13 +4069,10 @@ class MyRLEnv(Base5ActionRLEnv):
         )
         idle_factor = base_factor * (self.profit_aim / self.rr)
         hold_factor = idle_factor
+        unchanged_position = not self.is_tradesignal(action)
 
         # 2. Idle penalty
-        if (
-            base_reward is None
-            and action == Actions.Neutral.value
-            and self._position == Positions.Neutral
-        ):
+        if base_reward is None and unchanged_position and self._position == Positions.Neutral:
             max_idle_duration = max(1, self.max_idle_duration_candles)
             idle_penalty_ratio = float(
                 model_reward_parameters.get(
@@ -4061,7 +4095,7 @@ class MyRLEnv(Base5ActionRLEnv):
         if (
             base_reward is None
             and self._position in (Positions.Short, Positions.Long)
-            and action == Actions.Neutral.value
+            and unchanged_position
         ):
             hold_penalty_ratio = float(
                 model_reward_parameters.get(
@@ -4106,7 +4140,7 @@ class MyRLEnv(Base5ActionRLEnv):
         if base_reward is None:
             base_reward = 0.0
 
-        return base_reward
+        return base_reward + self._last_invalid_penalty
 
     def _get_observation(self) -> NDArray[np.float32]:
         start_idx = max(0, self._current_tick - self.window_size)
@@ -4212,6 +4246,7 @@ class MyRLEnv(Base5ActionRLEnv):
         execution_tick = self._current_tick
         exit_pnl = None
         reward = self.calculate_reward(action)
+        selection_reward = reward
         trade_type = self.execute_trade(action)
         entry_pnl = self.get_unrealized_profit() if previous_position == Positions.Neutral else 0.0
         if trade_type is not None and self._position in (Positions.Long, Positions.Short):
@@ -4258,6 +4293,7 @@ class MyRLEnv(Base5ActionRLEnv):
             exit_additive_scale=self._exit_additive_ratio * base_factor,
         )
         reward += shaping + entry_additive + exit_additive
+        selection_reward += entry_additive + exit_additive
         terminated = self.is_terminated()
         terminal_liquidation = terminated and self._position in (Positions.Long, Positions.Short)
         if terminal_liquidation:
@@ -4274,6 +4310,7 @@ class MyRLEnv(Base5ActionRLEnv):
                 self.rl_config.get("model_reward_parameters", {}),
             )
             reward += liquidation_reward
+            selection_reward += liquidation_reward
             self._last_exit_reward += liquidation_reward
             if self._exit_additive_enabled and not self.is_pbrs_invariant_mode():
                 liquidation_additive = self._compute_exit_additive(
@@ -4283,6 +4320,7 @@ class MyRLEnv(Base5ActionRLEnv):
                     self._exit_additive_ratio * base_factor,
                 )
                 reward += liquidation_additive
+                selection_reward += liquidation_additive
                 self._last_exit_additive += liquidation_additive
                 self._total_exit_additive += liquidation_additive
             exit_pnl = terminal_pnl
@@ -4333,6 +4371,7 @@ class MyRLEnv(Base5ActionRLEnv):
             "reward_hold": round(self._last_hold_penalty, 5),
             "reward_exit": round(self._last_exit_reward, 5),
             "reward": round(reward, 5),
+            "reward_selection": selection_reward,
             "total_reward": round(self.total_reward, 5),
             "pbrs_invariant": self.is_pbrs_invariant_mode(),
             "idle_duration": idle_duration,
@@ -5389,34 +5428,13 @@ def get_schedule(
 
 
 def get_net_arch(model_type: str, net_arch_type: NetArchSize) -> list[int] | dict[str, list[int]]:
-    """
-    Get network architecture
-    """
+    """Build only the selected architecture, falling back to the smallest size."""
+    width = ReforceXY._NET_ARCH_WIDTHS.get(
+        net_arch_type, ReforceXY._NET_ARCH_WIDTHS[ReforceXY._NET_ARCH_SIZES[0]]
+    )
     if ReforceXY._MODEL_TYPES[0] in model_type:  # "PPO"
-        return {
-            ReforceXY._NET_ARCH_SIZES[0]: {
-                "pi": [128, 128],
-                "vf": [128, 128],
-            },  # "small"
-            ReforceXY._NET_ARCH_SIZES[1]: {
-                "pi": [256, 256],
-                "vf": [256, 256],
-            },  # "medium"
-            ReforceXY._NET_ARCH_SIZES[2]: {
-                "pi": [512, 512],
-                "vf": [512, 512],
-            },  # "large"
-            ReforceXY._NET_ARCH_SIZES[3]: {
-                "pi": [1024, 1024],
-                "vf": [1024, 1024],
-            },  # "extra_large"
-        }.get(net_arch_type, {"pi": [128, 128], "vf": [128, 128]})
-    return {
-        ReforceXY._NET_ARCH_SIZES[0]: [128, 128],  # "small"
-        ReforceXY._NET_ARCH_SIZES[1]: [256, 256],  # "medium"
-        ReforceXY._NET_ARCH_SIZES[2]: [512, 512],  # "large"
-        ReforceXY._NET_ARCH_SIZES[3]: [1024, 1024],  # "extra_large"
-    }.get(net_arch_type, [128, 128])
+        return {"pi": [width, width], "vf": [width, width]}
+    return [width, width]
 
 
 def get_activation_fn(
