@@ -473,7 +473,7 @@ class ReforceXY(BaseReinforcementLearningModel):
     _LOG_2: Final[float] = math.log(2.0)
 
     _DEPLOYMENT_COORDINATE_MARKER_KEY: Final[str] = "reforcexy_deployment_coordinates"
-    _DEPLOYMENT_COORDINATE_GENERATION: Final[str] = "chronological-frozen-pipelines-pbrs-v3"
+    _DEPLOYMENT_COORDINATE_GENERATION: Final[str] = "chronological-frozen-pipelines-pbrs-v4"
 
     DEFAULT_BASE_FACTOR: Final[float] = 100.0
     DEFAULT_DISCOUNT_GAMMA: Final[float] = 0.95

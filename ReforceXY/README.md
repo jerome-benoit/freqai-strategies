@@ -235,12 +235,13 @@ Continual learning trains an independent copy of the deployed policy with its
 fitted feature pipeline. DQN/QRDQN deployments each persist their replay buffer;
 it is loaded only when continual training starts. Missing or incompatible replay
 data prevents continuation but does not prevent inference. The deployment
-generation covers frozen feature coordinates and PBRS reward semantics. Otherwise
-compatible older generations, including `chronological-frozen-pipelines-v2`, support
-inference but cannot continue training. Reset trained models or use a new
-`freqai.identifier` to migrate. Training disables `shuffle_after_split`. HPO
-studies and saved best parameters are reused only when their objective identity
-matches.
+generation covers frozen feature coordinates and reward semantics, including
+idle/hold costs on invalid actions. Otherwise compatible older generations,
+including `chronological-frozen-pipelines-v2` and
+`chronological-frozen-pipelines-pbrs-v3`, support inference but cannot continue
+training. Reset trained models or use a new `freqai.identifier` to migrate.
+Training disables `shuffle_after_split`. HPO studies and saved best parameters
+are reused only when their objective identity matches.
 
 Backtests continue only from a saved policy whose training cutoff precedes
 the current window's end and its last available candle boundary. A later
