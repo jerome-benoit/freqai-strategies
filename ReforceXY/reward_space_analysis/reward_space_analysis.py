@@ -929,7 +929,7 @@ def _compute_time_attenuation_coefficient(
     """
     Calculate time-based attenuation coefficient using configurable strategy.
 
-    Returns a coefficient (typically in range [0.5, 2.0]) to multiply with base_factor.
+    Returns a coefficient in [0, 1] for validated parameters.
     """
     if duration_ratio < 0.0:
         duration_ratio = 0.0
@@ -975,7 +975,7 @@ def _compute_time_attenuation_coefficient(
                     stacklevel=2,
                 )
                 alpha = 1.0
-        return 1.0 / math.pow(1.0 + dr, alpha)
+        return math.pow(1.0 + dr, -alpha)
 
     def _half_life_kernel(dr: float) -> float:
         hl = _get_float_param(params, "exit_half_life")
@@ -1101,7 +1101,9 @@ def _compute_pnl_target_coefficient(
     """
     Compute PnL target coefficient based on PnL/target ratio using tanh.
 
-    Returns a coefficient (typically 0.5-2.0) to be multiplied with base_factor.
+    For nonnegative tunables, amplification ranges from 1 to ``1 + win_reward_factor``
+    for gains, or ``1 + win_reward_factor * rr`` for losses. Here ``rr`` is the positive
+    ``risk_reward_ratio``, or ``RISK_REWARD_RATIO_DEFAULT`` otherwise.
     The coefficient rewards trades that exceed pnl_target and penalizes losses
     beyond the risk/reward threshold.
 
@@ -1112,7 +1114,7 @@ def _compute_pnl_target_coefficient(
         risk_reward_ratio: Risk/reward ratio for loss penalty calculation
 
     Returns:
-        float: Coefficient ≥ 0.0 (typically 0.5-2.0 range)
+        float: Nonnegative amplification coefficient for nonnegative tunables.
     """
     pnl_target_coefficient = 1.0
 
@@ -1342,6 +1344,11 @@ def calculate_reward(
         Whether to apply action masking (affects invalid action penalty)
     prev_potential : float, optional
         Previous state potential Φ(s), by default np.nan
+    next_context : RewardContext, optional
+        Actual marked state after advancing time, before terminal liquidation.
+        Required when a terminal transition leaves a position open.
+    terminated : bool
+        Close any resulting open position and clear the terminal potential.
 
     Returns
     -------
@@ -1371,10 +1378,9 @@ def calculate_reward(
         short_allowed=short_allowed,
     )
 
-    base_reward: float | None = None
+    base_reward = 0.0
     if not is_valid and not action_masking:
         breakdown.invalid_penalty = _get_float_param(params, "invalid_action")
-        base_reward = breakdown.invalid_penalty
 
     base_factor = _get_float_param(params, "base_factor", base_factor)
 
@@ -1396,35 +1402,31 @@ def calculate_reward(
         context.trade_duration, max_trade_duration_candles
     )
 
-    # Base reward calculation
-    if base_reward is None:
-        if context.action == Actions.Neutral:
-            if context.position == Positions.Neutral:
-                base_reward = _idle_penalty(context, idle_factor, params)
-                breakdown.idle_penalty = base_reward
-            elif context.position in (Positions.Long, Positions.Short):
-                base_reward = _hold_penalty(context, hold_factor, params)
-                breakdown.hold_penalty = base_reward
-            else:
-                base_reward = 0.0
-        else:
-            is_exit_action = (
-                context.action == Actions.Long_exit and context.position == Positions.Long
-            ) or (context.action == Actions.Short_exit and context.position == Positions.Short)
-            if is_exit_action:
-                base_reward = _compute_exit_reward(
-                    base_factor,
-                    pnl_target,
-                    current_duration_ratio,
-                    context,
-                    params,
-                    risk_reward_ratio,
-                )
-                breakdown.exit_component = base_reward
-                breakdown.exit_pnl = context.current_pnl
-            else:
-                base_reward = 0.0
+    # Time advances even when an invalid action leaves the physical state unchanged.
+    if context.action == Actions.Neutral or not is_valid:
+        if context.position == Positions.Neutral:
+            base_reward = _idle_penalty(context, idle_factor, params)
+            breakdown.idle_penalty = base_reward
+        elif context.position in (Positions.Long, Positions.Short):
+            base_reward = _hold_penalty(context, hold_factor, params)
+            breakdown.hold_penalty = base_reward
+    else:
+        is_exit_action = (
+            context.action == Actions.Long_exit and context.position == Positions.Long
+        ) or (context.action == Actions.Short_exit and context.position == Positions.Short)
+        if is_exit_action:
+            base_reward = _compute_exit_reward(
+                base_factor,
+                pnl_target,
+                current_duration_ratio,
+                context,
+                params,
+                risk_reward_ratio,
+            )
+            breakdown.exit_component = base_reward
+            breakdown.exit_pnl = context.current_pnl
 
+    base_reward += breakdown.invalid_penalty
     breakdown.base_reward = float(base_reward)
 
     # === PBRS INTEGRATION ===
@@ -1486,23 +1488,26 @@ def calculate_reward(
         next_duration_ratio = _compute_duration_ratio(
             next_context.trade_duration, max_trade_duration_candles
         )
-    terminal_context = next_context if next_context is not None else context
     breakdown.terminal_liquidation = bool(
         terminated and next_position in (Positions.Long, Positions.Short)
     )
     if breakdown.terminal_liquidation:
+        if next_context is None or next_context.position != next_position:
+            raise ValueError(
+                "next_context with the resulting open position is required for terminal liquidation"
+            )
         liquidation_reward = _compute_exit_reward(
             base_factor,
             pnl_target,
             next_duration_ratio,
-            terminal_context,
+            next_context,
             params,
             risk_reward_ratio,
         )
         base_reward += liquidation_reward
         breakdown.base_reward = float(base_reward)
         breakdown.exit_component += liquidation_reward
-        breakdown.exit_pnl = terminal_context.current_pnl
+        breakdown.exit_pnl = next_context.current_pnl
 
     # Resolve effective PBRS and additive enablement for every transition.
     exit_mode = _resolve_exit_potential_mode(
@@ -1512,11 +1517,10 @@ def calculate_reward(
     )
 
     hold_potential_enabled = _get_bool_param(params, "hold_potential_enabled")
-    entry_additive_enabled = (
-        False if exit_mode == "canonical" else _get_bool_param(params, "entry_additive_enabled")
-    )
-    exit_additive_enabled = (
-        False if exit_mode == "canonical" else _get_bool_param(params, "exit_additive_enabled")
+    entry_additive_enabled, exit_additive_enabled, _ = _resolve_additive_enablement(
+        exit_mode,
+        _get_bool_param(params, "entry_additive_enabled"),
+        _get_bool_param(params, "exit_additive_enabled"),
     )
 
     pbrs_enabled = bool(hold_potential_enabled or entry_additive_enabled or exit_additive_enabled)
@@ -1558,7 +1562,7 @@ def calculate_reward(
         )
         if breakdown.terminal_liquidation and exit_additive_enabled:
             exit_additive += _compute_exit_additive(
-                terminal_context.current_pnl, pnl_target, next_duration_ratio, params, base_factor
+                next_pnl, pnl_target, next_duration_ratio, params, base_factor
             )
         if terminated:
             next_potential = 0.0
@@ -1669,7 +1673,16 @@ def _sample_action(
     idle_duration: int,
     max_idle_duration_candles: int,
     action_masking: bool = True,
+    max_trade_duration_cap: int | None = None,
 ) -> tuple[Actions, float, float, float]:
+    if (
+        max_trade_duration_cap is not None
+        and position in (Positions.Long, Positions.Short)
+        and trade_duration >= max_trade_duration_cap
+    ):
+        action = Actions.Long_exit if position == Positions.Long else Actions.Short_exit
+        return action, float("nan"), 1.0, float("nan")
+
     entry_prob, exit_prob, neutral_prob = _sampling_probabilities(
         position,
         short_allowed=short_allowed,
@@ -1813,7 +1826,7 @@ def simulate_samples(
     max_idle_duration_candles = get_max_idle_duration_candles(
         params, max_trade_duration_candles=max_trade_duration_candles
     )
-    max_trade_duration_cap = _scale_duration(max_trade_duration_candles, max_duration_ratio)
+    max_trade_duration_cap = max(1, _scale_duration(max_trade_duration_candles, max_duration_ratio))
 
     samples: list[dict[str, float | None]] = []
     prev_potential: float = 0.0
@@ -1842,6 +1855,7 @@ def simulate_samples(
             idle_duration=idle_duration,
             max_idle_duration_candles=max_idle_duration_candles,
             action_masking=action_masking,
+            max_trade_duration_cap=max_trade_duration_cap,
         )
 
         context = RewardContext(
@@ -1875,7 +1889,7 @@ def simulate_samples(
                 idle_duration = 0
                 entry_open = current_open
         if position in (Positions.Long, Positions.Short):
-            trade_duration = min(trade_duration + 1, max_trade_duration_cap)
+            trade_duration += 1
         else:
             idle_duration += 1
         # Simulate synthetic open-price movement.
@@ -2064,8 +2078,12 @@ def _validate_simulation_invariants(df: pd.DataFrame, params: RewardParams) -> N
     # INVARIANT 1: masked sampling must only emit legal actions; unmasked
     # actions may be invalid but cannot change position before terminal liquidation.
     if _get_bool_param(params, "action_masking", True):
-        long_exits = df[(df["action"] == 2.0) & (df["position"] != 1.0)]
-        short_exits = df[(df["action"] == 4.0) & (df["position"] != 0.0)]
+        long_exits = df[
+            (df["action"] == Actions.Long_exit.value) & (df["position"] != Positions.Long.value)
+        ]
+        short_exits = df[
+            (df["action"] == Actions.Short_exit.value) & (df["position"] != Positions.Short.value)
+        ]
         if len(long_exits) > 0:
             raise AssertionError(f"Sim: {len(long_exits)} Long_exit actions without Long position")
         if len(short_exits) > 0:
@@ -2073,8 +2091,13 @@ def _validate_simulation_invariants(df: pd.DataFrame, params: RewardParams) -> N
                 f"Sim: {len(short_exits)} Short_exit actions without Short position"
             )
 
-        long_entries = df[(df["action"] == 1.0) & (df["position"] != 0.5)]
-        short_entries = df[(df["action"] == 3.0) & (df["position"] != 0.5)]
+        long_entries = df[
+            (df["action"] == Actions.Long_enter.value) & (df["position"] != Positions.Neutral.value)
+        ]
+        short_entries = df[
+            (df["action"] == Actions.Short_enter.value)
+            & (df["position"] != Positions.Neutral.value)
+        ]
         if len(long_entries) > 0:
             raise AssertionError(
                 f"Sim: {len(long_entries)} Long_enter actions without Neutral position"
@@ -2093,20 +2116,22 @@ def _validate_simulation_invariants(df: pd.DataFrame, params: RewardParams) -> N
             raise AssertionError(f"Sim: {len(changed_on_invalid)} invalid actions changed position")
 
     # INVARIANT 2: Duration logic
-    neutral_with_trade = df[(df["position"] == 0.5) & (df["trade_duration"] > 0)]
+    neutral_with_trade = df[
+        (df["position"] == Positions.Neutral.value) & (df["trade_duration"] > 0)
+    ]
     if len(neutral_with_trade) > 0:
         raise AssertionError(
             f"Sim: {len(neutral_with_trade)} Neutral positions with non-zero trade_duration"
         )
 
-    inpos_with_idle = df[(df["position"] != 0.5) & (df["idle_duration"] > 0)]
+    inpos_with_idle = df[(df["position"] != Positions.Neutral.value) & (df["idle_duration"] > 0)]
     if len(inpos_with_idle) > 0:
         raise AssertionError(
             f"Sim: {len(inpos_with_idle)} in-position samples with idle_duration > 0"
         )
 
     # INVARIANT 3: Neutral states have zero PnL (simulation design)
-    neutral_with_pnl = df[(df["position"] == 0.5) & (df["pnl"].abs() > eps_pnl)]
+    neutral_with_pnl = df[(df["position"] == Positions.Neutral.value) & (df["pnl"].abs() > eps_pnl)]
     if len(neutral_with_pnl) > 0:
         raise AssertionError(f"Sim: {len(neutral_with_pnl)} Neutral positions with non-zero pnl")
 
@@ -2330,7 +2355,7 @@ def _compute_representativity_stats(
     pnl_target = _resolve_pnl_target(profit_aim, risk_reward_ratio)
     total = len(df)
     # Map numeric position codes to readable labels to avoid casting Neutral (0.5) to 0
-    pos_label_map = {0.0: "Short", 0.5: "Neutral", 1.0: "Long"}
+    pos_label_map = {position.value: position.name for position in Positions}
     pos_labeled = df["position"].map(pos_label_map)
     pos_counts = (
         pos_labeled.value_counts().reindex(["Short", "Neutral", "Long"]).fillna(0).astype(int)
@@ -3925,7 +3950,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
         "--max_duration_ratio",
         type=float,
         default=2.5,
-        help="Multiple of max duration used when sampling trade/idle durations.",
+        help="Synthetic trade-duration bound multiplier; positions exit at the bound (minimum one candle).",
     )
     parser.add_argument(
         "--pnl_base_std",
@@ -4808,8 +4833,7 @@ def write_complete_statistical_analysis(
                 f.write("| Feature | KL Div | JS Dist | Wasserstein | KS Stat | KS p-value |\n")
                 f.write("|---------|--------|---------|-------------|---------|------------|\n")
 
-                features = ["pnl", "trade_duration", "idle_duration"]
-                for feature in features:
+                for feature in _DISTRIBUTION_SHIFT_FEATURES:
                     kl = distribution_shift.get(f"{feature}_kl_divergence", np.nan)
                     js = distribution_shift.get(f"{feature}_js_distance", np.nan)
                     ws = distribution_shift.get(f"{feature}_wasserstein", np.nan)

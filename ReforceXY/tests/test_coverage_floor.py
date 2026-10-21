@@ -167,17 +167,17 @@ class CoverageFloorTest(QaTestCase):
         # policy allows.
         self.assertGreaterEqual(float(self._raw_floor()), MINIMUM_FLOOR)
 
-    def test_no_production_source_widens_coverage_s_default_exclusions(self):
+    def _assert_source_exclusions(self, tree: Path):
         # The SOURCE side of the same lever. coverage applies DEFAULT_EXCLUDE by
         # regex-searching the raw file text, so a pragma inside a string literal removes a
         # real statement, and `while True:` / `if True:` remove branch units — 27% of this
         # denominator — with no config key reachable at all. Parsing twice, once with the
         # defaults and once without, is exact by construction: coverage applies them only
         # when `self.exclude` is truthy, so the difference is the lever and nothing else.
-        measured = {Path(p) for p in find_python_files(str(MEASURED_TREE), True)}
+        measured = {Path(p) for p in find_python_files(str(tree), True)}
         self.assertEqual(
             measured,
-            set(MEASURED_TREE.rglob("*.py")),
+            set(tree.rglob("*.py")),
             "the guard must audit exactly the files coverage measures; find_python_files also "
             "admits .pyw and rejects odd-character names, so a future one turns this red with "
             "no coverage defect",
@@ -207,6 +207,9 @@ class CoverageFloorTest(QaTestCase):
                     baseline.lines_matching(join_regex(DEFAULT_PARTIAL + DEFAULT_PARTIAL_ALWAYS)),
                     "a branch-level default exclusion matches here",
                 )
+
+    def test_no_production_source_widens_coverage_s_default_exclusions(self):
+        self._assert_source_exclusions(MEASURED_TREE)
 
     def test_the_config_is_the_one_coverage_resolves(self):
         # coverage looks for `.coveragerc` in the directory it is run from and does not
@@ -294,6 +297,33 @@ class CoverageFloorTest(QaTestCase):
 
 
 class CoverageProvenanceRegressionTest(QaTestCase):
+    def test_actual_denominator_guards_reject_config_and_source_exclusions(self):
+        baseline = COVERAGERC.read_text()
+        cases = (
+            ("source_dirs = elsewhere", "test_no_other_option_declares_a_measurement_root"),
+            ("plugins = plugin", "test_no_other_option_declares_a_measurement_root"),
+            ("patch = subprocess", "test_no_production_code_is_excluded_by_any_other_key"),
+            ("exclude_line = return", "test_every_present_option_is_a_legal_name_for_its_section"),
+        )
+        for option, method in cases:
+            with self.subTest(option=option), temporary_directory() as directory:
+                fixture = directory / ".coveragerc"
+                fixture.write_text(baseline.replace("[run]", f"[run]\n{option}"))
+                result = unittest.TestResult()
+                with mock.patch.dict(globals(), COVERAGERC=fixture):
+                    CoverageFloorTest(method).run(result)
+                self.assertEqual(result.errors, [])
+                self.assertEqual(len(result.failures), 1)
+        for source in (
+            "def omitted():\n    ...\n",
+            "def choose(flag):\n    if True:\n        return flag\n    return None\n",
+            'def choose(flag):\n    marker = "# pragma: no cover"\n    return flag\n',
+        ):
+            with self.subTest(source=source), temporary_directory() as directory:
+                (directory / "sample.py").write_text(source)
+                with self.assertRaises(AssertionError):
+                    CoverageFloorTest()._assert_source_exclusions(directory)
+
     def test_actual_guard_rejects_invalid_and_accepts_final_dated_measurements(self):
         """Run the real guard against fixture files, including stale but valid provenance."""
         baseline = COVERAGERC.read_text()

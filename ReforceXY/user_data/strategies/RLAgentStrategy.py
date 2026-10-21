@@ -5,6 +5,8 @@ from typing import Any, Final, Literal
 
 import numpy as np
 import pandas as pd
+from freqtrade.constants import LongShort
+from freqtrade.freqai.RL.Base5ActionRLEnv import Actions
 
 # import talib.abstract as ta
 from freqtrade.persistence import Trade
@@ -12,7 +14,6 @@ from freqtrade.strategy import IStrategy
 from pandas import DataFrame
 
 TradingMode = Literal["margin", "futures", "spot"]
-TradeDirection = Literal["long", "short"]
 
 logger = logging.getLogger(__name__)
 
@@ -53,11 +54,11 @@ class RLAgentStrategy(IStrategy):
     INTERFACE_VERSION = 3
 
     _TRADING_MODES: Final[tuple[TradingMode, ...]] = ("margin", "futures", "spot")
-    _TRADE_DIRECTIONS: Final[tuple[TradeDirection, ...]] = ("long", "short")
-    _ACTION_ENTER_LONG: Final[int] = 1
-    _ACTION_EXIT_LONG: Final[int] = 2
-    _ACTION_ENTER_SHORT: Final[int] = 3
-    _ACTION_EXIT_SHORT: Final[int] = 4
+    _TRADE_DIRECTIONS: Final[tuple[LongShort, ...]] = ("long", "short")
+    _ACTION_ENTER_LONG: Final[int] = Actions.Long_enter.value
+    _ACTION_EXIT_LONG: Final[int] = Actions.Long_exit.value
+    _ACTION_ENTER_SHORT: Final[int] = Actions.Short_enter.value
+    _ACTION_EXIT_SHORT: Final[int] = Actions.Short_exit.value
     _leverage_warning_state: tuple[str, str] | None = None
 
     @property
@@ -87,7 +88,18 @@ class RLAgentStrategy(IStrategy):
     def feature_engineering_expand_basic(
         self, dataframe: DataFrame, metadata: dict[str, Any], **kwargs
     ) -> DataFrame:
-        dataframe["%-close_log_return"] = np.log(dataframe.get("close")).diff()
+        close_values = dataframe["close"].to_numpy(dtype=float)
+        valid = np.isfinite(close_values) & (close_values > 0.0)
+        invalid_close_count = int(np.count_nonzero(~valid))
+        if invalid_close_count:
+            logger.debug(
+                "feature_engineering_expand_basic: %d close values are non-finite or non-positive; close log return is NaN at those positions",
+                invalid_close_count,
+            )
+        with np.errstate(divide="ignore", invalid="ignore"):
+            dataframe["%-close_log_return"] = pd.Series(
+                np.where(valid, np.log(close_values), np.nan), index=dataframe.index
+            ).diff()
         dataframe["%-raw_volume"] = dataframe.get("volume")
 
         return dataframe

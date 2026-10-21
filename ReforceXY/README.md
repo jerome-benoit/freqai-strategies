@@ -91,6 +91,11 @@ volume, calendar and raw OHLC features, but does not implement a period-dependen
 `freqai.feature_parameters.indicator_periods_candles=[8,16,32]` therefore adds
 no period-dependent indicators.
 
+Close log returns require finite, strictly positive closes. An invalid close and
+the following candle have NaN returns; returns resume after two consecutive valid
+closes. Prices, rows and volume remain unchanged. Native feature filtering removes
+affected training rows and invalidates affected prediction windows.
+
 Explicit configuration overrides schema defaults and constructor fallbacks. The
 tables distinguish those defaults and requirements from the supplied profile;
 inspect normalized startup logs. Set `test_size`
@@ -185,12 +190,13 @@ evaluation are outside this timeout. The supplied zero timeout disables the HPO
 timeout. Evaluation environments/episodes also cost resources; a larger budget
 is not evidence of better economics.
 
-The objective maximizes the best mean deterministic evaluation **episode reward**
-across periodic and final evaluations. Progress may display the latest mean
-reward, which is not the selected best mean reward. The objective is not net
-portfolio profit, Sharpe or Sortino. The holdout participates in model/HPO
-selection; reserve a separate unseen market period for economic confirmation
-under the [evaluation protocol](../docs/evaluation.md).
+The objective maximizes the best mean deterministic evaluation **episode score**
+across periodic and final evaluations. This score excludes PBRS shaping but
+retains enabled non-PBRS additives. The same score selects checkpoints and
+controls no-improvement stopping. Progress may display the latest mean, not the
+selected best mean. The objective is not net portfolio profit, Sharpe or
+Sortino. The holdout participates in model/HPO selection; reserve a separate
+unseen market period under the [evaluation protocol](../docs/evaluation.md).
 
 Optuna trains fresh candidates in current-window feature coordinates. Sampled
 parameters override supplied model parameters during trials. Hyperband prunes
@@ -229,12 +235,13 @@ Continual learning trains an independent copy of the deployed policy with its
 fitted feature pipeline. DQN/QRDQN deployments each persist their replay buffer;
 it is loaded only when continual training starts. Missing or incompatible replay
 data prevents continuation but does not prevent inference. The deployment
-generation covers frozen feature coordinates and PBRS reward semantics. Otherwise
-compatible older generations, including `chronological-frozen-pipelines-v2`, support
-inference but cannot continue training. Reset trained models or use a new
-`freqai.identifier` to migrate. Training disables `shuffle_after_split`. HPO
-studies and saved best parameters are reused only when their objective identity
-matches.
+generation covers frozen feature coordinates and reward semantics, including
+idle/hold costs on invalid actions. Otherwise compatible older generations,
+including `chronological-frozen-pipelines-v2` and
+`chronological-frozen-pipelines-pbrs-v3`, support inference but cannot continue
+training. Reset trained models or use a new `freqai.identifier` to migrate.
+Training disables `shuffle_after_split`. HPO studies and saved best parameters
+are reused only when their objective identity matches.
 
 Backtests continue only from a saved policy whose training cutoff precedes
 the current window's end and its last available candle boundary. A later
@@ -253,6 +260,11 @@ including rows in partly marked histories, can count when their nonzero,
 nonexpired prediction status distinguishes them from bootstrap; zero-status rows
 remain excluded because bootstrap and rejected predictions cannot be
 distinguished. Explicit false markers remain excluded.
+Real policy outputs count even when their prediction status is rejected, including
+genuine neutral actions. Neutral placeholders without policy inference, expired
+outputs and skipped candles do not count. New metadata fields added to restored
+history remain NaN for earlier candles; current metadata never backfills the past.
+These unknown historical values survive restart initialization.
 On duplicate candle dates, a provable prediction takes precedence over an
 ambiguous close-bearing legacy row during history restoration.
 Rows with an invalid `date_pred` are discarded with a per-pair warning and the
@@ -335,7 +347,7 @@ Moving base images can change them; record the runtime version.
 | freqai.rl_config.model_reward_parameters.rr                         | Schema: 1; direct constructor requires the member                      | Numeric reward-to-risk factor                                                                                      | 2                                                                           | The schema injects an omitted member into an existing reward map; direct environment construction without it raises. Native reward target uses rr × profit_aim.                                                                                                                                                                                                                |
 | freqai.rl_config.model_reward_parameters.profit_aim                 | Schema: 0.025; direct constructor requires the member                  | Numeric profit target                                                                                              | 0.025                                                                       | The schema injects an omitted member into an existing reward map; direct environment construction without it raises. This reward target does not place a live take-profit order.                                                                                                                                                                                               |
 | freqai.rl_config.model_reward_parameters.max_trade_duration_candles | 128                                                                    | Integer-convertible value; no local range validation                                                               | 96                                                                          | Duration scale for reward penalties, not a live timeout. The schema accepts the top-level homonym `freqai.rl_config.max_trade_duration_candles`, but ReforceXY ignores it; only this reward-map member takes effect.                                                                                                                                                           |
-| freqai.rl_config.model_reward_parameters.max_idle_duration_candles  | 4 × effective max_trade_duration_candles                               | Integer-convertible value; no local range validation                                                               | Omitted (384 from the supplied trade scale)                                 | Idle duration scale for reward penalties, not a live timer.                                                                                                                                                                                                                                                                                                                    |
+| freqai.rl_config.model_reward_parameters.max_idle_duration_candles  | 4 × effective max_trade_duration_candles                               | None or integer-convertible value; no local range validation                                                       | Omitted (384 from the supplied trade scale)                                 | Missing/None derives the scale; explicit zero uses denominator 1. Reward scale, not a live timer.                                                                                                                                                                                                                                                                              |
 
 ### HPO settings
 
@@ -406,7 +418,9 @@ Rewards combine the fill-time base components with a potential-based shaping
 delta over the returned next observation. Termination liquidates any remaining
 position once and sets terminal shaping to `-prev_potential`, even for tiny
 nonzero potentials. `get_env_history()` returns one metrics/price row per transition.
-Its `execution_tick` is the transition/action/fill
+History `reward` remains the shaped training reward; `reward_selection` records
+the separate evaluation contribution without PBRS.
+The transition's `execution_tick` is the action/fill
 key before the tick increment; its `tick` is the returned post-increment price and
 observation row (normally `execution_tick + 1`). Exit-efficiency extrema include
 the fee-adjusted PnL at entry and subsequent retained market marks. Ordered

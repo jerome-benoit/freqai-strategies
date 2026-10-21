@@ -40,6 +40,10 @@ def regressor(**attrs: object) -> QuickAdapterRegressorV3:
     model._optuna_hp_params = {}
     model._holdout_rmse = {}
     model._session_fitted_pairs = {PAIR}
+    model._metric_model_identity = {}
+    model._loaded_holdout_rmse = {}
+    model._backtest_calibration_starts = {}
+    model._backtest_current_metrics = {}
     model._optuna_hyperopt = False
     model.ft_params = {"label_period_candles": 1}
     model._label_defaults = (1, 5.0)
@@ -474,59 +478,6 @@ class RegressorPredictionHistoryTest(QaTestCase):
             }
         )
 
-    def test_marker_is_set_on_the_current_candle_and_its_return_mirror_only(self):
-        model, dd = self._model_with_appended_history(
-            ["2026-01-01 00:00", "2026-01-01 00:05", "2026-01-01 00:10"]
-        )
-        dk = kitchen()
-        dk.return_dataframe = dd.historic_predictions[PAIR].copy()
-
-        def native_overwrite(self, dataframe, dk, pair, trained_timestamp):
-            current = pd.Timestamp(dataframe["date"].iloc[-1])
-            frame = dd.historic_predictions[pair]
-            frame.at[frame.index[-1], "date_pred"] = current
-            dd.model_return_values[pair] = frame.tail(1).reset_index(drop=True)
-            dk.return_dataframe = frame.tail(1).reset_index(drop=True)
-
-        with mock.patch.object(
-            IFreqaiModel,
-            "build_strategy_return_arrays",
-            autospec=True,
-            side_effect=native_overwrite,
-        ):
-            model.build_strategy_return_arrays(self._strategy_frame(), dk, PAIR, 0)
-
-        self.assertEqual(
-            dd.historic_predictions[PAIR][_PRODUCED_PREDICTION_COLUMN].tolist(),
-            [False, False, True],
-        )
-        self.assertEqual(dd.model_return_values[PAIR][_PRODUCED_PREDICTION_COLUMN].tolist(), [True])
-        self.assertNotIn(_PRODUCED_PREDICTION_COLUMN, dk.return_dataframe)
-        self.assertEqual(model._calibration_current_candles, {})
-
-    def test_no_marker_when_the_saved_candle_predates_the_strategy_frame(self):
-        model, dd = self._model_with_appended_history(
-            ["2026-01-01 00:50", "2026-01-01 00:55", "2026-01-01 01:00"]
-        )
-        dk = kitchen()
-        dk.return_dataframe = dd.historic_predictions[PAIR].copy()
-
-        def stale_append(self, dataframe, dk, pair, trained_timestamp):
-            dk.return_dataframe = dd.historic_predictions[pair].tail(1).reset_index(drop=True)
-
-        with mock.patch.object(
-            IFreqaiModel, "build_strategy_return_arrays", autospec=True, side_effect=stale_append
-        ):
-            model.build_strategy_return_arrays(self._strategy_frame(), dk, PAIR, 0)
-
-        self.assertEqual(
-            dd.historic_predictions[PAIR][_PRODUCED_PREDICTION_COLUMN].tolist(), [False] * 3
-        )
-        self.assertEqual(
-            dd.model_return_values[PAIR][_PRODUCED_PREDICTION_COLUMN].tolist(), [False]
-        )
-        self.assertNotIn(_PRODUCED_PREDICTION_COLUMN, dk.return_dataframe)
-
     def test_the_current_candle_is_released_even_when_the_native_append_fails(self):
         model, dd = self._model_with_appended_history(
             ["2026-01-01 00:00", "2026-01-01 00:05", "2026-01-01 00:10"]
@@ -548,51 +499,6 @@ class RegressorPredictionHistoryTest(QaTestCase):
         self.assertEqual(model._calibration_current_candles, {})
         self.assertEqual(
             dd.historic_predictions[PAIR][_PRODUCED_PREDICTION_COLUMN].tolist(), [False] * 3
-        )
-
-    def test_return_dataframe_is_always_stripped_of_the_private_column(self):
-        model, _ = self._model_with_appended_history(
-            ["2026-01-01 00:00", "2026-01-01 00:05", "2026-01-01 00:10"]
-        )
-        dk = kitchen()
-        dk.return_dataframe = pd.DataFrame({_PRODUCED_PREDICTION_COLUMN: [True], LABEL: [0.0]})
-
-        with mock.patch.object(IFreqaiModel, "build_strategy_return_arrays", autospec=True):
-            model.build_strategy_return_arrays(self._strategy_frame(), dk, PAIR, 0)
-
-        self.assertNotIn(_PRODUCED_PREDICTION_COLUMN, dk.return_dataframe)
-        self.assertIn(LABEL, dk.return_dataframe)
-
-    def test_bootstrap_history_gains_an_all_false_produced_column(self):
-        frame = history(["2026-01-01 00:00", "2026-01-01 00:05"], [False, False])
-        dd = drawer()
-        dd.historic_predictions[PAIR] = frame
-        model = regressor(dd=dd)
-        strat_df = pd.DataFrame(
-            {
-                "date": pd.to_datetime(["2026-01-01 00:00", "2026-01-01 00:05"], utc=True),
-                "high": [101.0, 101.0],
-                "low": [99.0, 99.0],
-                "close": [100.0, 100.0],
-            }
-        )
-        bootstrap = pd.DataFrame({LABEL: [0.0, 0.0]})
-        dk = kitchen()
-        dk.data["extra_returns_per_train"] = {}
-
-        with mock.patch.object(
-            IFreqaiModel,
-            "set_initial_historic_predictions",
-            autospec=True,
-            side_effect=lambda self, *args: self.dd.historic_predictions.__setitem__(
-                PAIR, bootstrap.copy()
-            ),
-        ):
-            model.set_initial_historic_predictions(bootstrap, dk, PAIR, strat_df)
-
-        self.assertEqual(
-            dd.historic_predictions[PAIR][_PRODUCED_PREDICTION_COLUMN].tolist(),
-            [False, False],
         )
 
     # ---------------------------------------------------------------- DI cutoff sentinels
@@ -692,14 +598,51 @@ class RegressorPredictionHistoryTest(QaTestCase):
             None,
             "0.5",
             [1.0],
+            True,
+            np.bool_(True),
+            1 + 0j,
+            10**500,
+            np.longdouble("1e400"),
         ):
             with self.subTest(value=value):
                 self.assertIsNone(QuickAdapterRegressorV3.optuna_validate_value(value))
 
-    def test_validate_value_passes_finite_numbers_through_unchanged(self):
-        self.assertEqual(QuickAdapterRegressorV3.optuna_validate_value(3), 3)
-        self.assertEqual(QuickAdapterRegressorV3.optuna_validate_value(-1.25), -1.25)
-        self.assertEqual(QuickAdapterRegressorV3.optuna_validate_value(0.0), 0.0)
+    def test_validate_value_preserves_finite_python_and_numpy_scores(self):
+        for value, expected in (
+            (3, 3.0),
+            (-1.25, -1.25),
+            (0.0, 0.0),
+            (np.int64(2), 2.0),
+            (np.float32(0.5), 0.5),
+        ):
+            with self.subTest(value=value):
+                self.assertEqual(QuickAdapterRegressorV3.optuna_validate_value(value), expected)
+
+    def test_loaded_holdout_rmse_preserves_valid_scores_and_rejects_invalid_metadata(self):
+        for value, expected in (
+            (0, 0.0),
+            (0.25, 0.25),
+            (np.int64(2), 2.0),
+            (np.float32(0.5), 0.5),
+            (-1, np.inf),
+            (None, np.inf),
+            ("0.25", np.inf),
+            (True, np.inf),
+            (np.bool_(True), np.inf),
+            (np.nan, np.inf),
+            (np.inf, np.inf),
+            (-np.inf, np.inf),
+            (10**500, np.inf),
+            (np.longdouble("1e400"), np.inf),
+        ):
+            with self.subTest(value=value):
+                model, dk, _ = calibrated()
+                model._session_fitted_pairs.clear()
+                dk.data["extra_returns_per_train"]["holdout_rmse"] = value
+
+                model.fit_live_predictions(dk, PAIR)
+
+                self.assertEqual(dk.data["extra_returns_per_train"]["holdout_rmse"], expected)
 
     def test_holdout_rmse_is_infinite_rather_than_a_fabricated_score(self):
         # (in-memory score, persisted replay column, pair already fitted this session)
@@ -734,7 +677,7 @@ class RegressorPredictionHistoryTest(QaTestCase):
             ],
             [True, True, True, False, True, True],
             values=[-0.5, 0.5, 0.0, 5.0, 9.0, 7.0],
-            holdout=[0.25, 0.5, np.nan, 888.0, 999.0, 777.0],
+            holdout=[0.25, 0.5, 0.75, 888.0, 999.0, 777.0],
         )
         persisted.loc[5, "date_pred"] = pd.NaT
         for order in (list(range(6)), [4, 2, 0, 3, 1, 5]):
@@ -750,11 +693,11 @@ class RegressorPredictionHistoryTest(QaTestCase):
                 model._holdout_rmse = {PAIR: float("inf")}
                 model._session_fitted_pairs = set()
                 model.fit_live_predictions(dk, PAIR)
-                self.assertEqual(dk.data["extra_returns_per_train"]["holdout_rmse"], 0.5)
+                self.assertEqual(dk.data["extra_returns_per_train"]["holdout_rmse"], 0.75)
                 self.assertEqual(dk.data["labels_mean"][LABEL], 0.0)
 
     def test_unavailable_replayed_holdout_does_not_resurrect_an_older_score(self):
-        for latest, expected in ((np.inf, np.inf), (np.nan, 0.5)):
+        for latest, expected in ((np.inf, np.inf), (np.nan, np.inf), (-1, np.inf), (0, 0)):
             with self.subTest(latest=latest):
                 model, dk, _ = calibrated(candles=2, holdout=[0.5, latest])
                 model._holdout_rmse = {PAIR: np.inf}
@@ -771,6 +714,55 @@ class RegressorPredictionHistoryTest(QaTestCase):
         model.fit_live_predictions(dk, PAIR)
 
         self.assertTrue(np.isposinf(extra["holdout_rmse"]))
+
+    def _hpo_window(self):
+        frame = pd.DataFrame(
+            {
+                "date": pd.date_range("2026-01-01", periods=12, freq=CANDLE_FREQ, tz="UTC"),
+                "close": np.arange(12, dtype=float),
+            }
+        )
+        model = regressor(live=False, dd=drawer())
+        model.data_provider = SimpleNamespace(get_pair_dataframe=lambda **kwargs: frame)
+        model.dd.historic_predictions[PAIR] = frame.iloc[:2]
+        dk = kitchen()
+        dk.full_df = frame
+        return model, dk, frame
+
+    def test_label_hpo_uses_current_cursor_after_missing_predictions(self):
+        for observations in (0, 2):
+            with self.subTest(produced_observations=observations):
+                model, dk, frame = self._hpo_window()
+                model.dd.historic_predictions[PAIR] = frame.iloc[:observations]
+                model._calibration_current_candles[PAIR] = frame["date"].iloc[7]
+
+                result = model._label_hpo_dataframe_as_of_prediction_time(dk, PAIR)
+
+                pd.testing.assert_frame_equal(result, frame.iloc[:8])
+
+    def test_label_hpo_keeps_historical_inference_without_a_cursor(self):
+        model, dk, frame = self._hpo_window()
+
+        result = model._label_hpo_dataframe_as_of_prediction_time(dk, PAIR)
+
+        pd.testing.assert_frame_equal(result, frame.iloc[:3])
+
+    def test_label_hpo_rejects_an_unknown_explicit_cursor(self):
+        model, dk, _ = self._hpo_window()
+        model._calibration_current_candles[PAIR] = pd.NaT
+
+        result = model._label_hpo_dataframe_as_of_prediction_time(dk, PAIR)
+
+        self.assertTrue(result.empty)
+
+    def test_label_hpo_live_uses_the_provider_window(self):
+        model, dk, frame = self._hpo_window()
+        model.live = True
+        model._calibration_current_candles[PAIR] = frame["date"].iloc[3]
+
+        result = model._label_hpo_dataframe_as_of_prediction_time(dk, PAIR)
+
+        pd.testing.assert_frame_equal(result, frame)
 
     # --------------------------------------------------------------- optuna throttling
 

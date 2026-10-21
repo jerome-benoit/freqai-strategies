@@ -41,7 +41,7 @@ class TestRewardRobustnessAndBoundaries(RewardSpaceTestBase):
 
     # Owns invariant: robustness-decomposition-integrity-101 (robustness category)
     def test_decomposition_integrity(self):
-        """reward must equal the single active core component under mutually exclusive scenarios (idle/hold/exit/invalid)."""
+        """Isolate idle, hold, exit and pre-overtime invalid costs in selected scenarios."""
         scenarios = [
             {
                 "ctx": self.make_ctx(

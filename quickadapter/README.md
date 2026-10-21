@@ -11,7 +11,9 @@ morphology, not returns. Regressor error is a model diagnostic, not a profit sco
 - [Models and HPO](#models-and-hpo)
 - [Configuration formats](#configuration-formats)
 - [Continual learning](#continual-learning)
+- [Backtest cache reuse](#backtest-cache-reuse)
 - [Prediction warmup and restarts](#prediction-warmup-and-restarts)
+- [Prediction diagnostics and gaps](#prediction-diagnostics-and-gaps)
 - [Configuration reference](#configuration-reference)
 
 ## Quick start
@@ -116,12 +118,12 @@ Use model-specific training parameters supported by the selected backend.
 
 `freqai.optuna_hyperopt.enabled=false` disables regressor and dynamic label
 HPO. When enabled, trial, worker and timeout budgets apply. Label HPO selects
-morphology parameters, not held-out trading profit. `holdout_rmse` reports
-weighted error on the original label scale before deployment refit; unavailable
-holdouts produce infinity. Use the [evaluation protocol](../docs/evaluation.md)
-for economic comparison and the limitations of threshold replay in native
-backtests. Changing fitted pipelines, label weighting or study schemas can
-require a new `freqai.identifier` or an intentional reset; see the reference.
+morphology parameters, not held-out trading profit. See
+[Prediction diagnostics and gaps](#prediction-diagnostics-and-gaps) for model
+error and graph interpretation. Use the [evaluation protocol](../docs/evaluation.md)
+for economic comparisons and the limits of native backtests. Changing fitted
+pipelines, label weighting or study schemas can require a new `freqai.identifier`
+or an intentional reset; see the reference.
 
 Live and dry-run initialization restores accepted per-pair label parameters
 (`label_period_candles` and `label_natr_multiplier`) saved under
@@ -147,34 +149,119 @@ later model left under the same identifier is not reused when a backtest is
 extended into the past. Live and dry-run restarts still restore compatible
 deployed models.
 
+## Backtest cache reuse
+
+Backtests store reusable models and predictions under
+`models/<identifier>/backtesting/<fingerprint>/`. Cache identity includes input
+data, effective model and strategy configuration (including settings outside
+`freqai`), effective label and native strategy parameters, strategy/model code
+and dependency versions.
+Changing these inputs or extending the dataset uses a separate cache directory.
+Even configuration changes unrelated to training can therefore trigger retraining.
+Existing artifacts remain on disk; they are not deleted.
+
+Native strategy parameters are compared after defaults and the strategy's
+adjacent JSON parameter file have been applied. Editing that file does not
+invalidate the cache if effective parameter values and all other inputs stay
+unchanged.
+
+Any prepared input column with pandas `object` or `category` dtype disables
+reuse, including non-feature inputs and structured orderflow data. Value hashing
+does not preserve scalar types or category metadata. Each run therefore uses a
+fresh directory, increasing training time and disk use. Plain text can use pandas
+`string` dtype to retain reuse, provided conversion preserves target semantics.
+
+Cached and fresh windows return the same predictions and prepared indicator
+columns. `freqai_backtest_live_models=true` is a separate Freqtrade mode: it
+replays stored live predictions without training models.
+
 ## Prediction warmup and restarts
 
-In live and dry-run modes, each pair requires
-`freqai.fit_live_predictions_candles` real model predictions before adaptive
-thresholds become available. The Nth observation first affects the next
-prediction update, not the candle that produced it. FreqAI bootstrap
-predictions made from the initial training frame do not count. Warmup progress
-from persisted real predictions is restored after a restart. FreqAI saves
-prediction history after training attempts and on clean shutdown. After an
-abrupt stop or hard reboot, predictions since the last history save may be
-lost, so those observations must accumulate again. Legacy rows missing
-provenance, including rows in partly marked histories, count only when their
-nonzero, nonexpired prediction status distinguishes them from bootstrap;
-ambiguous rejected rows and explicit false markers do not count.
+### When thresholds become available
 
-A pair starts a new warmup when the time since its last observation, or a gap
-within its observations, is greater than
+Each pair needs `freqai.fit_live_predictions_candles` real model predictions
+before adaptive thresholds become available. The Nth observation first affects
+the next prediction update, not the candle that produced it. Genuine zero and
+outlier-rejected predictions count; FreqAI bootstrap predictions, missing outputs
+and expired-model rows do not.
+
+For older histories without reliable provenance, only distinguishable model
+outputs count. Ambiguous rows remain excluded, even when their displayed value
+is zero; see [`prediction_available`](#prediction-diagnostics-and-gaps).
+
+### Missing observations
+
+Missing predictions delay warmup. A pair starts a new warmup if a gap between
+eligible observations, or the time since its last observation, exceeds
 `fit_live_predictions_candles × timeframe`. An observation exactly one horizon
-old remains eligible. Downtime and expired-model rows are excluded; genuine
-zero and outlier-rejected predictions count. Predictions align to candle dates;
-candles without predictions have `do_predict=0` and downtime zeros display but
-never calibrate.
+old remains eligible.
 
-After a restart, persisted `holdout_rmse` is recovered from the latest produced
-prediction available at the decision time, independently of the calibration
-window. A newer unavailable score remains unavailable rather than reviving an
-older finite score. Recovery does not warm up adaptive thresholds; a model fitted
-in the current session keeps its in-memory score.
+### After a restart
+
+Persisted real predictions restore warmup progress. FreqAI saves prediction
+history after training attempts and on clean shutdown. An abrupt stop or reboot
+can lose unsaved observations, so they must accumulate again.
+
+## Prediction diagnostics and gaps
+
+### Prediction availability
+
+`prediction_available` describes whether a model output is available, not whether
+an entry is allowed. The [decision cycle](#decision-cycle) defines the entry and
+exit conditions.
+
+| Value               | Meaning                                                                                                                              |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `1`                 | A finite model output from complete inputs, including genuine zero and outlier-rejected outputs.                                     |
+| `0`                 | No usable output: no model, bootstrap, missing inputs or history, non-finite output, downtime, model expiration or backtest padding. |
+| `NaN` / JSON `null` | Unknown provenance in an older history. Existing values are retained but do not count toward calibration.                            |
+
+Stored-live-prediction replay uses the same availability values: a candle without
+a matching history row has value `0`; an existing ambiguous legacy row remains
+unknown.
+
+Missing or infinite input features remain rejected after preprocessing;
+replacing missing inputs with zero does not make them valid. Non-finite model
+outputs are also rejected and excluded from warmup.
+
+For known absences, predictions, their statistics and thresholds, RMSE and DI
+diagnostics appear as graph gaps (`NaN`) and JSON `null`. DI diagnostics include
+the values, fitted distribution parameters and cutoff. Genuine zeros remain
+visible. Already persisted zeros cannot be identified retrospectively as earlier
+missing values.
+
+### Model error and recovery
+
+`holdout_rmse` measures weighted prediction error on the original label scale,
+using the holdout before deployment refit. It is not a trading-profit metric.
+Unknown, negative or non-finite scores appear as gaps, not as a perfect score
+of zero. A genuine zero RMSE remains visible.
+
+After a restart, the loaded model's score takes precedence. Only when its
+`holdout_rmse` field is absent does recovery use the score recorded with the
+latest real prediction available at the decision time, independently of the
+calibration window. A newer unavailable score does not revive an older finite one.
+A model trained in the current run keeps its own score.
+
+Restoring RMSE does not make adaptive thresholds ready; prediction warmup still
+applies. New output columns remain missing on older candles instead of
+backfilling them with current values.
+
+### Historical target plots
+
+Before FreqAI, `&s-extrema` contains the training target; after FreqAI, it contains
+the model prediction. The historical target direction and label-weight subplots
+show target construction, not forecasts.
+Raw direction and label weights use bars; their smoothed values use curves.
+
+Raw Zigzag direction is sparse (-1/0/+1). Smoothed direction can be zero outside
+the smoothing support or through cancellation. A flat series with no confirmed
+pivot does not provide usable labels merely because its target values are zero.
+
+The `extrema_direction`, `extrema_direction_smoothed`, `extrema_weight` and
+`extrema_weight_smoothed` diagnostics also appear in backtests. They are not model
+features. Missing diagnostics, including weights when weighting is disabled,
+remain `NaN`, not synthesized zeros.
 
 ## Configuration reference
 
@@ -215,6 +302,11 @@ and the [FreqAI parameter reference][freqai-parameters].
 | Path     | Runtime fallback    | Type / Range              | Description                                             |
 | -------- | ------------------- | ------------------------- | ------------------------------------------------------- |
 | leverage | `proposed_leverage` | float [1.0, max_leverage] | Leverage. Fallback to `proposed_leverage` for the pair. |
+
+Configured leverage must be numeric, finite and representable as a float.
+Strings, booleans, nonfinite values and conversion overflow log a warning and use
+the callback's `proposed_leverage`. Missing or null values also use that proposal.
+The effective leverage is clamped to `[1.0, max_leverage]`, including proposal fallbacks.
 
 ### Exit pricing
 

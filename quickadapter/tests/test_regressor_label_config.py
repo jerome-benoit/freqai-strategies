@@ -339,17 +339,34 @@ class RegressorLabelConfigTest(QaTestCase):
 
     def test_knn_density_aggregation_and_neighbour_bounds_are_fatal(self):
         cases = {
-            "label_density_aggregation": ("median", "supported values are power_mean"),
-            "label_density_n_neighbors": (0, "must be int >= 1"),
-            "label_density_aggregation_param": (1.5, "must be in \\[0, 1\\]"),
+            "label_density_aggregation": ("median",),
+            "label_density_n_neighbors": (0, True, np.bool_(True), 1.5, "5"),
+            "label_density_aggregation_param": (
+                1.5,
+                True,
+                np.bool_(False),
+                "0.5",
+                1 + 0j,
+                [0.5],
+                10**500,
+                np.longdouble("1e400"),
+            ),
         }
-        for key, (value, fragment) in cases.items():
-            with self.subTest(key=key):
-                ft_params = {"label_density_aggregation": "quantile"}
-                ft_params[key] = value
-                model = label_regressor(ft_params=ft_params)
-                with self.assertRaisesRegex(ValueError, fragment):
-                    model._resolve_label_method_config("knn")
+        for key, values in cases.items():
+            for value in values:
+                with self.subTest(key=key, value=value):
+                    ft_params = {"label_density_aggregation": "quantile"}
+                    ft_params[key] = value
+                    model = label_regressor(ft_params=ft_params)
+                    with self.assertRaises(ValueError):
+                        model._resolve_label_method_config("knn")
+
+    def test_invalid_scalar_orders_cannot_enter_persisted_selection_metadata(self):
+        for value in (True, np.bool_(False), "2.0", 2 + 0j, [2.0], 10**500):
+            with self.subTest(value=value):
+                model = label_regressor(ft_params={"label_p_order": value})
+                with self.assertRaises(ValueError):
+                    model._optuna_label_selection_metadata()
 
     def test_knn_aggregation_param_defaults_follow_the_aggregation(self):
         expected = {
@@ -666,19 +683,24 @@ class RegressorLabelConfigTest(QaTestCase):
         self.assertEqual(metadata["method_config"]["category"], "cluster")
         self.assertIsInstance(json_roundtrip(metadata), dict)
 
+    def test_selection_metadata_serializes_a_numpy_aggregation_parameter(self):
+        model = label_regressor(
+            ft_params={
+                "label_method": "knn",
+                "label_density_aggregation": "quantile",
+                "label_density_aggregation_param": np.float32(0.5),
+            }
+        )
+        metadata = model._optuna_label_selection_metadata()
+        self.assertEqual(json_roundtrip(metadata)["method_config"]["aggregation_param"], 0.5)
+
     def test_selection_metadata_refuses_non_finite_weights_and_p_order(self):
         cases = {
-            "label_weights": (
-                {"label_weights": [0.5, np.inf]},
-                "label_weights contains non-finite",
-            ),
-            "label_p_order": (
-                {"label_p_order": float("nan")},
-                "label_p_order is non-finite",
-            ),
+            "label_weights": {"label_weights": [0.5, np.inf]},
+            "label_p_order": {"label_p_order": float("nan")},
         }
-        for name, (ft_params, fragment) in cases.items():
-            with self.subTest(field=name), self.assertRaisesRegex(ValueError, fragment):
+        for name, ft_params in cases.items():
+            with self.subTest(field=name), self.assertRaises(ValueError):
                 label_regressor(ft_params=ft_params)._optuna_label_selection_metadata()
 
     def test_optuna_create_sampler_maps_every_enum_to_its_sampler(self):

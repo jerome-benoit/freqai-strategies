@@ -8,8 +8,11 @@ from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import cached_property, wraps
-from inspect import iscoroutinefunction, unwrap
+from hashlib import sha256
+from importlib.metadata import version as distribution_version
+from inspect import getfile, iscoroutinefunction, unwrap
 from pathlib import Path
+from types import MethodType
 from typing import (
     Any,
     ClassVar,
@@ -20,6 +23,7 @@ from typing import (
     cast,
     get_args,
 )
+from uuid import uuid4
 
 import numpy as np
 import optuna
@@ -41,6 +45,7 @@ from freqtrade.freqai.data_drawer import (
     FreqaiDataDrawer,
 )
 from freqtrade.freqai.data_kitchen import FreqaiDataKitchen
+from freqtrade.strategy.interface import IStrategy
 
 # Disabled: scikit-learn-extra 0.3.0 fails on Python 3.14 (__gxx_personality_v0).
 # from sklearn_extra.cluster import KMedoids
@@ -82,13 +87,19 @@ from Utils import (
     DEFAULT_MIN_LABEL_PERIOD_CANDLES,
     DEFAULT_REGRESSOR,
     DEFAULTS_LABEL_PREDICTION,
+    EXTREMA_DIRECTION_COLUMN,
+    EXTREMA_DIRECTION_SMOOTHED_COLUMN,
+    EXTREMA_WEIGHT_COLUMN,
+    EXTREMA_WEIGHT_SMOOTHED_COLUMN,
     LABEL_COLUMNS,
     REGRESSORS,
     WEIGHT_STRATEGIES,
     LabelWeightSupportError,
     OptunaNamespace,
     Regressor,
+    _NumericValidator,
     _optuna_quarantine_path,
+    coerce_finite_float,
     compose_sample_weights,
     ensure_datetime_series,
     enum_error_message,
@@ -178,16 +189,21 @@ def _produced_prediction_mask(frame: pd.DataFrame) -> NDArray[np.bool_]:
 
 
 def _ensure_produced_prediction_column(frame: pd.DataFrame) -> pd.DataFrame:
+    """Infer proven legacy outputs without turning ambiguous zeros into placeholders."""
+    inferred = pd.Series(np.nan, index=frame.index, dtype=object)
+    inferred.loc[_legacy_produced_prediction_mask(frame)] = True
+    if "do_predict" in frame:
+        inferred.loc[pd.to_numeric(frame["do_predict"], errors="coerce").eq(2)] = False
     if _PRODUCED_PREDICTION_COLUMN not in frame:
         result = frame.copy()
-        result[_PRODUCED_PREDICTION_COLUMN] = _legacy_produced_prediction_mask(frame)
+        result[_PRODUCED_PREDICTION_COLUMN] = inferred
         return result
-    missing = frame[_PRODUCED_PREDICTION_COLUMN].isna()
+    missing = frame[_PRODUCED_PREDICTION_COLUMN].isna() & inferred.notna()
     if not missing.any():
         return frame
     result = frame.copy()
     result[_PRODUCED_PREDICTION_COLUMN] = frame[_PRODUCED_PREDICTION_COLUMN].where(
-        ~missing, _legacy_produced_prediction_mask(frame)
+        ~missing, inferred
     )
     return result
 
@@ -241,6 +257,10 @@ def _align_historic_predictions(history: pd.DataFrame, dataframe: pd.DataFrame) 
         aligned["do_predict"] = aligned["do_predict"].where(~missing, 0)
     else:
         aligned["do_predict"] = 0
+    if _PRODUCED_PREDICTION_COLUMN in aligned:
+        aligned[_PRODUCED_PREDICTION_COLUMN] = aligned[_PRODUCED_PREDICTION_COLUMN].where(
+            ~missing, False
+        )
     return aligned
 
 
@@ -452,11 +472,18 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     https://github.com/sponsors/robcaulk
     """
 
-    version = "3.13.0-rc.15"
+    version = "3.13.0-rc.16"
 
     _CALIBRATION_START_KEY: Final[str] = "quickadapter_calibration_start"
     _DEPLOYMENT_COORDINATE_MARKER_KEY: Final[str] = "quickadapter_deployment_coordinates"
     _DEPLOYMENT_COORDINATE_GENERATION: Final[str] = "frozen-pipelines-v1"
+    _BACKTEST_CONTEXT_KEY: Final[str] = "quickadapter_backtest_context"
+    _DIAGNOSTIC_COLUMNS: Final[tuple[str, ...]] = (
+        EXTREMA_DIRECTION_COLUMN,
+        EXTREMA_DIRECTION_SMOOTHED_COLUMN,
+        EXTREMA_WEIGHT_COLUMN,
+        EXTREMA_WEIGHT_SMOOTHED_COLUMN,
+    )
 
     _TEST_SIZE: Final[float] = 0.1
     _SKLEARN_TRAIN_TEST_SPLIT_KEYS: Final[frozenset[str]] = frozenset(
@@ -491,7 +518,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         ValueError,
         json.JSONDecodeError,
     )
-    _OPTUNA_JOURNAL_QUARANTINE_TIE_BREAK_LIMIT: Final[int] = 8
+    _OPTUNA_JOURNAL_QUARANTINE_TIE_BREAK_LIMIT: Final[int] = 99
     _OPTUNA_JOURNAL_OP_CODE_KEY: Final[str] = "op_code"
     _OPTUNA_JOURNAL_OPERATION_CODES: Final[frozenset[int]] = frozenset(range(10))
     _OPTUNA_JOURNAL_TAIL_PROBE_BYTES: Final[int] = 65536
@@ -715,9 +742,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
     @staticmethod
     def _coerce_int(value: Any, name: str, *, minimum: int) -> int:
-        if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+        validator = _NumericValidator(min_value=minimum, require_int=True)
+        if not validator(value):
             raise ValueError(
-                f"Invalid data_split_parameters.{name} value {value!r}: must be int >= {minimum}"
+                f"Invalid data_split_parameters.{name} value {value!r}: {validator.message(name)}"
             )
         return value
 
@@ -760,14 +788,17 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         row's LOCAL position in ``unfiltered_df`` to recover the local
         index at which the label becomes causally available.
 
-        Row-wise ``max`` of every present ``<label>_known_at_lookahead`` and
-        ``<label>_weight_known_at_lookahead`` column (weight availability lags
-        the label by one pivot); columns missing or with any NaN are skipped
-        silently (opt-in by emission). Returns ``None`` when none is usable;
-        callers then fall back to the position-based purge.
+        Present channels contribute their row-wise maximum. Missing or invalid
+        values make only their row unavailable until the end of this frame.
+        Entirely absent channels retain the fixed-horizon fallback.
         """
         QuickAdapterRegressorV3._validate_index_alignment(filtered_dataframe, unfiltered_df)
-        series_list: list[pd.Series] = []
+        positions = QuickAdapterRegressorV3._row_positions(
+            filtered_dataframe, unfiltered_df
+        ).to_numpy(dtype=np.int64)
+        unknown = len(unfiltered_df) - positions
+        combined = np.zeros(len(filtered_dataframe), dtype=np.int64)
+        found = False
         for label_col in LABEL_COLUMNS:
             for lookahead_col in (
                 label_known_at_lookahead_column_name(label_col),
@@ -775,15 +806,23 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             ):
                 if lookahead_col not in unfiltered_df.columns:
                     continue
-                lookahead = unfiltered_df.loc[filtered_dataframe.index, lookahead_col]
-                if lookahead.isna().any():
-                    continue
-                series_list.append(pd.to_numeric(lookahead, errors="raise"))
-        if not series_list:
+                found = True
+                numeric = pd.to_numeric(
+                    unfiltered_df.loc[filtered_dataframe.index, lookahead_col], errors="coerce"
+                )
+                if pd.api.types.is_integer_dtype(numeric.dtype):
+                    valid = numeric.ge(0) & numeric.le(np.iinfo(np.int64).max)
+                    values = numeric.where(
+                        valid.fillna(False), pd.Series(unknown, index=numeric.index)
+                    ).to_numpy(dtype=np.int64)
+                else:
+                    raw = numeric.to_numpy(dtype=float, na_value=np.nan)
+                    valid = np.isfinite(raw) & (raw >= 0) & (raw < 2**63) & (raw == np.floor(raw))
+                    values = np.where(valid, raw, unknown).astype(np.int64)
+                np.maximum(combined, values, out=combined)
+        if not found:
             return None
-        if len(series_list) == 1:
-            return series_list[0].astype(np.int64)
-        return pd.concat(series_list, axis=1).max(axis=1).astype(np.int64)
+        return pd.Series(combined, index=filtered_dataframe.index, dtype=np.int64)
 
     @staticmethod
     def _filter_train_by_mask(
@@ -1078,7 +1117,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
     @staticmethod
     def _validate_scalar(
-        value: float | None,
+        value: Any,
         *,
         ctx: str,
         mode: ValidationMode,
@@ -1087,28 +1126,19 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     ) -> float | None:
         if value is None:
             return None
-        if mode == _VALIDATION_MODES[2]:  # "none"
-            return (
-                float(value)
-                if (np.isfinite(value) and (predicate is None or predicate(value)))
-                else None
-            )
-
-        if not np.isfinite(value):
-            msg = f"Invalid {ctx} value {value!r}: must be finite"
-            if mode == _VALIDATION_MODES[1]:  # "raise"
-                raise ValueError(msg)
-            logger.warning(f"{msg}, using default")
-            return None
-
-        if predicate is not None and not predicate(value):
+        scalar = coerce_finite_float(value)
+        if scalar is None:
+            msg = f"Invalid {ctx} value {value!r}: must be a finite real number representable as a float"
+        elif predicate is not None and (not predicate(value) or not predicate(scalar)):
             msg = f"Invalid {ctx} value {value!r}: {constraint}"
-            if mode == _VALIDATION_MODES[1]:  # "raise"
-                raise ValueError(msg)
-            logger.warning(f"{msg}, using default")
+        else:
+            return scalar
+        if mode == _VALIDATION_MODES[2]:  # "none"
             return None
-
-        return float(value)
+        if mode == _VALIDATION_MODES[1]:  # "raise"
+            raise ValueError(msg)
+        logger.warning(f"{msg}, using default")
+        return None
 
     @staticmethod
     def _validate_minkowski_p(
@@ -1425,9 +1455,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                     "label_density_n_neighbors",
                     QuickAdapterRegressorV3.LABEL_DENSITY_N_NEIGHBORS_DEFAULT,
                 )
-                if not isinstance(n_neighbors, int) or n_neighbors < 1:
+                validator = _NumericValidator(min_value=1, require_int=True)
+                if not validator(n_neighbors):
                     raise ValueError(
-                        f"Invalid label_density_n_neighbors value {n_neighbors!r}: must be int >= 1"
+                        f"Invalid label_density_n_neighbors value {n_neighbors!r}: "
+                        f"{validator.message('label_density_n_neighbors')}"
                     )
                 config["n_neighbors"] = n_neighbors
 
@@ -1440,12 +1472,12 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
                 if aggregation_param is not None:
                     if aggregation == QuickAdapterRegressorV3._DENSITY_AGG_QUANTILE:
-                        QuickAdapterRegressorV3._validate_quantile_q(
+                        aggregation_param = QuickAdapterRegressorV3._validate_quantile_q(
                             aggregation_param,
                             ctx="label_density_aggregation_param",
                         )
                     elif aggregation == QuickAdapterRegressorV3._DENSITY_AGG_POWER_MEAN:
-                        QuickAdapterRegressorV3._validate_power_mean_p(
+                        aggregation_param = QuickAdapterRegressorV3._validate_power_mean_p(
                             aggregation_param,
                             ctx="label_density_aggregation_param",
                         )
@@ -1484,15 +1516,18 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         label_p_order = self.ft_params.get("label_p_order")
         if label_weights is not None and not all(np.isfinite(float(w)) for w in label_weights):
             raise ValueError(f"label_weights contains non-finite values: {label_weights!r}")
-        if label_p_order is not None and not np.isfinite(float(label_p_order)):
-            raise ValueError(f"label_p_order is non-finite: {label_p_order!r}")
+        label_p_order = QuickAdapterRegressorV3._validate_scalar(
+            label_p_order,
+            ctx="label_p_order",
+            mode=_VALIDATION_MODES[1],  # "raise"
+        )
         return {
             "schema_version": _OPTUNA_LABEL_SELECTION_SCHEMA_VERSION,
             "method_config": self._resolve_label_method_config(label_method),
             "label_weights": (
                 [float(w) for w in label_weights] if label_weights is not None else None
             ),
-            "label_p_order": (float(label_p_order) if label_p_order is not None else None),
+            "label_p_order": label_p_order,
         }
 
     @cached_property
@@ -1680,6 +1715,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         self._optuna_hp_value: dict[str, float] = {}
         self._holdout_rmse: dict[str, float] = {}
         self._session_fitted_pairs: set[str] = set()
+        self._metric_model_identity: dict[str, tuple[str, str]] = {}
+        self._loaded_holdout_rmse: dict[str, float | None] = {}
+        self._backtest_calibration_starts: dict[str, str] = {}
+        self._backtest_current_metrics: dict[str, dict[str, Any]] = {}
         self._calibration_current_candles: dict[str, pd.Timestamp] = {}
         self._optuna_label_values: dict[str, list[float | int]] = {}
         self._optuna_hp_params: dict[str, dict[str, Any]] = {}
@@ -1733,6 +1772,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
             self.regressor = DEFAULT_REGRESSOR
             self.freqai_info["regressor"] = self.regressor
+        self._backtest_config = copy.deepcopy(self.freqai_info)
+        self._install_prediction_transport()
         self._log_model_configuration()
 
     def _log_model_configuration(self) -> None:
@@ -2077,6 +2118,501 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             self._optuna_label_candle_pool.extend(sorted(optuna_label_available_candles))
             self._optuna_label_shuffle_rng.shuffle(self._optuna_label_candle_pool)
 
+    @staticmethod
+    def _coerce_holdout_rmse(value: Any) -> float:
+        """Keep genuine zero error; negative, missing and non-finite scores are unavailable."""
+        score = coerce_finite_float(value)
+        return score if score is not None and value >= 0 else np.inf
+
+    @staticmethod
+    def _kitchen_model_identity(dk: FreqaiDataKitchen) -> tuple[str, str]:
+        return str(getattr(dk, "data_path", "")), str(getattr(dk, "model_filename", ""))
+
+    def _capture_model_metric(self, dk: FreqaiDataKitchen, pair: str) -> None:
+        """Capture the model's metadata before calibration rewrites its returned extras."""
+        identity = self._kitchen_model_identity(dk)
+        if self._metric_model_identity.get(pair) == identity:
+            return
+        self._metric_model_identity[pair] = identity
+        self._session_fitted_pairs.discard(pair)
+        extras = dk.data.get("extra_returns_per_train", {})
+        self._loaded_holdout_rmse[pair] = (
+            self._coerce_holdout_rmse(extras["holdout_rmse"]) if "holdout_rmse" in extras else None
+        )
+
+    def _ensure_history_schema(self, dk: FreqaiDataKitchen, pair: str) -> None:
+        """Extend old histories without fabricating past observations or scores."""
+        if pair not in self.dd.historic_predictions:
+            return
+        history = _ensure_produced_prediction_column(self.dd.historic_predictions[pair])
+        columns = dict.fromkeys(dk.label_list + dk.unique_class_list, np.nan)
+        for label in dk.label_list + dk.unique_class_list:
+            columns[f"{label}_mean"] = np.nan
+            columns[f"{label}_std"] = np.nan
+        columns.update(dk.data.get("extra_returns_per_train", {}))
+        columns["holdout_rmse"] = np.nan
+        if self.ft_params.get("DI_threshold", 0) > 0:
+            columns["DI_values"] = np.nan
+        for column, value in columns.items():
+            if column not in history:
+                dtype = (
+                    float
+                    if isinstance(value, (int, float, np.number))
+                    and not isinstance(value, (bool, np.bool_))
+                    else object
+                )
+                history[column] = pd.Series(np.nan, index=history.index, dtype=dtype)
+        self.dd.historic_predictions[pair] = history
+
+    def _normalise_prediction_returns(
+        self, frame: pd.DataFrame, provenance: pd.Series | None = None
+    ) -> pd.DataFrame:
+        """Show known absences as gaps, preserving genuine and ambiguous legacy zeros."""
+        if provenance is None:
+            if _PRODUCED_PREDICTION_COLUMN in frame:
+                provenance = frame[_PRODUCED_PREDICTION_COLUMN]
+            else:
+                provenance = pd.Series(np.nan, index=frame.index, dtype=object)
+                provenance.loc[_legacy_produced_prediction_mask(frame)] = True
+        availability = pd.to_numeric(provenance, errors="coerce").astype(float)
+        availability.index = frame.index
+        if "do_predict" in frame:
+            availability.loc[pd.to_numeric(frame["do_predict"], errors="coerce").eq(2)] = 0.0
+        frame["prediction_available"] = availability
+        absent = availability.eq(0)
+        for column in frame.columns:
+            if column.startswith("&") or column in (
+                "holdout_rmse",
+                "DI_values",
+                "DI_cutoff",
+                "DI_value_param1",
+                "DI_value_param2",
+                "DI_value_param3",
+            ):
+                values = pd.to_numeric(frame[column], errors="coerce").astype(float)
+                frame[column] = values.mask(absent)
+        if "holdout_rmse" not in frame:
+            frame["holdout_rmse"] = np.nan
+        else:
+            scores = frame["holdout_rmse"]
+            frame["holdout_rmse"] = scores.where(np.isfinite(scores) & scores.ge(0))
+        return frame.drop(columns=[_PRODUCED_PREDICTION_COLUMN], errors="ignore")
+
+    def _install_prediction_transport(self) -> None:
+        """Repair only this QuickAdapter drawer, leaving the shared SDK patch unchanged."""
+        drawer = self.dd
+        original_initial = drawer.set_initial_return_values
+        original_append = drawer.append_model_predictions
+        original_null = drawer.return_null_values_to_strategy
+
+        @wraps(original_initial)
+        def initial(
+            current: FreqaiDataDrawer, pair: str, predictions: pd.DataFrame, frame: pd.DataFrame
+        ) -> None:
+            history = _dedupe_historic_predictions_on_date_pred(
+                _ensure_produced_prediction_column(current.historic_predictions[pair]), pair
+            )
+            current.historic_predictions[pair] = history
+            missing = history.set_index("date_pred").isna()
+            original_initial(pair, predictions, frame)
+            result = current.historic_predictions[pair]
+            old_missing = missing.reindex(pd.DatetimeIndex(result["date_pred"]), fill_value=False)
+            old_missing.index = result.index
+            result[missing.columns] = result[missing.columns].mask(old_missing)
+            added = ~result["date_pred"].isin(missing.index)
+            result.loc[added, _PRODUCED_PREDICTION_COLUMN] = False
+            current.model_return_values[pair] = _align_historic_predictions(result, frame)
+
+        @wraps(original_append)
+        def append(
+            current: FreqaiDataDrawer,
+            pair: str,
+            predictions: pd.DataFrame,
+            status: NDArray[np.int_],
+            dk: FreqaiDataKitchen,
+            frame: pd.DataFrame,
+        ) -> None:
+            self._ensure_history_schema(dk, pair)
+            old_dates = pd.DatetimeIndex(current.historic_predictions[pair]["date_pred"])
+            original_append(pair, predictions, status, dk, frame)
+            history = current.historic_predictions[pair]
+            added = ~history["date_pred"].isin(old_dates)
+            history.loc[added, _PRODUCED_PREDICTION_COLUMN] = False
+            if (
+                not frame.empty
+                and not history.empty
+                and history["date_pred"].iloc[-1]
+                == pd.to_datetime(frame["date"].iloc[-1], utc=True)
+            ):
+                produced = dk.__dict__.get("_quickadapter_prediction_produced")
+                history.at[history.index[-1], _PRODUCED_PREDICTION_COLUMN] = bool(
+                    status[-1] != 2 and (produced is None or produced[-1])
+                )
+            current.model_return_values[pair] = _align_historic_predictions(history, frame)
+
+        @wraps(original_null)
+        def null(current: FreqaiDataDrawer, frame: pd.DataFrame, dk: FreqaiDataKitchen) -> None:
+            original_null(frame, dk)
+            dk.return_dataframe = self._normalise_prediction_returns(
+                dk.return_dataframe, pd.Series(False, index=dk.return_dataframe.index)
+            )
+
+        drawer.__dict__["set_initial_return_values"] = MethodType(initial, drawer)
+        drawer.__dict__["append_model_predictions"] = MethodType(append, drawer)
+        drawer.__dict__["return_null_values_to_strategy"] = MethodType(null, drawer)
+
+    def start(self, dataframe: pd.DataFrame, metadata: dict, strategy: Any) -> pd.DataFrame:
+        result = super().start(dataframe, metadata, strategy)
+        if "prediction_available" not in result:
+            result = self._normalise_prediction_returns(result)
+        return result
+
+    def start_backtesting_from_historic_predictions(
+        self, dataframe: pd.DataFrame, metadata: dict, dk: FreqaiDataKitchen
+    ) -> FreqaiDataKitchen:
+        dk = super().start_backtesting_from_historic_predictions(dataframe, metadata, dk)
+        frame = _ensure_produced_prediction_column(dk.return_dataframe)
+        provenance = frame[_PRODUCED_PREDICTION_COLUMN].mask(frame["date_pred"].isna(), False)
+        dk.return_dataframe = self._normalise_prediction_returns(frame, provenance)
+        return dk
+
+    def _backtest_fingerprint(self, prepared: pd.DataFrame, pair: str, strategy: Any) -> str:
+        """Bind cached predictions and models to their actual inputs and implementation."""
+        digest = sha256()
+        configuration = {
+            "freqai": self._backtest_config,
+            "model_config": self.config,
+            "strategy_config": strategy.config,
+            "strategy_parameters": {
+                name: parameter.value for name, parameter in strategy.enumerate_parameters()
+            },
+            "pair": pair,
+            "labels": {label: strategy.get_label_params(pair, label) for label in LABEL_COLUMNS},
+            "versions": {
+                name: distribution_version(name)
+                for name in (
+                    "freqtrade",
+                    "datasieve",
+                    "numpy",
+                    "pandas",
+                    "scipy",
+                    "scikit-learn",
+                    "optuna",
+                    "optuna-integration",
+                    "xgboost",
+                    "lightgbm",
+                    "catboost",
+                    "ngboost",
+                )
+            },
+        }
+        sdk_classes = set(BaseRegressionModel.__mro__) | set(IStrategy.__mro__)
+        implementations = {
+            role: [cls for cls in leaf.__mro__ if cls not in sdk_classes]
+            for role, leaf in (("strategy", type(strategy)), ("model", type(self)))
+        }
+        configuration["implementations"] = {
+            role: [(cls.__module__, cls.__qualname__) for cls in classes]
+            for role, classes in implementations.items()
+        }
+        source_cache: dict[tuple[str, str | Path], bytes] = {}
+        sources: dict[tuple[str, bytes], None] = {}
+
+        def add_source(path: str | Path, snapshot: str | None = None) -> None:
+            key = ("snapshot", snapshot) if snapshot is not None else ("file", Path(path).resolve())
+            if key not in source_cache:
+                source_cache[key] = (
+                    snapshot.encode() if snapshot is not None else Path(path).read_bytes()
+                )
+            sources[(Path(path).name, source_cache[key])] = None
+
+        for classes in implementations.values():
+            leaf = classes[0]
+            for cls in classes:
+                snapshot = cls.__dict__.get("__source__")
+                path = cls.__dict__.get("__file__")
+                if snapshot is None and path is None and cls.__module__ == leaf.__module__:
+                    snapshot = leaf.__dict__.get("__source__")
+                    path = leaf.__dict__.get("__file__")
+                if snapshot is None and path is None:
+                    path = getfile(cls)
+                add_source(path or cls.__module__, snapshot)
+        for path in (Path(__file__), Path(getfile(LabelTransformer)), Path(getfile(fit_regressor))):
+            add_source(path)
+        digest.update(json.dumps(configuration, sort_keys=True, default=str).encode())
+        for label, payload in sources:
+            digest.update(label.encode())
+            digest.update(payload)
+        columns = [(column, str(dtype)) for column, dtype in prepared.dtypes.items()]
+        digest.update(json.dumps(columns).encode())
+        try:
+            unsafe = [
+                column
+                for column, dtype in prepared.dtypes.items()
+                if pd.api.types.is_object_dtype(dtype) or isinstance(dtype, pd.CategoricalDtype)
+            ]
+            if unsafe:
+                raise TypeError(
+                    f"value hashing loses scalar types or category metadata for columns {unsafe}"
+                )
+            values = pd.util.hash_pandas_object(prepared, index=False).to_numpy()
+        except (TypeError, ValueError) as error:
+            logger.warning(
+                "[%s] Backtest cache reuse disabled: cannot fingerprint inputs (%s: %s); "
+                "using a fresh cache namespace",
+                pair,
+                type(error).__name__,
+                error,
+            )
+            digest.update(uuid4().bytes)
+        else:
+            digest.update(values.data)
+        return digest.hexdigest()
+
+    def start_backtesting(
+        self, dataframe: pd.DataFrame, metadata: dict, dk: FreqaiDataKitchen, strategy: Any
+    ) -> FreqaiDataKitchen:
+        """Scope SDK hooks to one kitchen; keep the upstream training loop intact."""
+        pair = metadata["pair"]
+        populate = dk.use_strategy_to_populate_indicators
+        prepared = populate(strategy, prediction_dataframe=dataframe, pair=pair)
+        fingerprint = self._backtest_fingerprint(prepared, pair, strategy)
+        root = dk.get_full_models_path(self.config)
+        namespace = root / "backtesting" / fingerprint
+        dates = ensure_datetime_series(prepared["date"])
+        if dates.isna().any():
+            raise ValueError(
+                f"[{pair}] Invalid backtest input dates: "
+                f"{dates.isna().sum()} missing or invalid timestamps"
+            )
+        if not dates.is_unique:
+            raise ValueError(
+                f"[{pair}] Invalid backtest input dates: "
+                f"{dates.duplicated().sum()} duplicate timestamps"
+            )
+        if not dates.is_monotonic_increasing:
+            raise ValueError(
+                f"[{pair}] Invalid backtest input dates: timestamps must be in chronological order"
+            )
+        calendar = pd.DatetimeIndex(dates)
+        windows = {
+            training.stopts: prediction
+            for training, prediction in zip(
+                dk.training_timeranges, dk.backtesting_timeranges, strict=True
+            )
+        }
+        check = dk.check_if_backtest_prediction_is_valid
+        append = dk.get_predictions_to_append
+        fill = dk.fill_predictions
+        load = self.dd.load_data
+        hooks = (
+            "get_full_models_path",
+            "use_strategy_to_populate_indicators",
+            "check_if_backtest_prediction_is_valid",
+            "get_predictions_to_append",
+            "fill_predictions",
+        )
+        original = {name: dk.__dict__.get(name) for name in hooks}
+        original_load = self.dd.__dict__.get("load_data")
+
+        def models_path(current: FreqaiDataKitchen, config: dict) -> Path:
+            return namespace
+
+        @wraps(populate)
+        def populated(current: FreqaiDataKitchen, *args, **kwargs) -> pd.DataFrame:
+            requested = kwargs.get("prediction_dataframe")
+            if requested is dataframe or requested is prepared:
+                return prepared
+            if isinstance(requested, pd.DataFrame) and "date" in requested:
+                positions = calendar.get_indexer(
+                    pd.DatetimeIndex(ensure_datetime_series(requested["date"]))
+                )
+                if (positions >= 0).all():
+                    return prepared.iloc[positions]
+            return populate(*args, **kwargs)
+
+        @wraps(check)
+        def valid(current: FreqaiDataKitchen, length: int) -> bool:
+            current.data[self._BACKTEST_CONTEXT_KEY] = fingerprint
+            if not check(length):
+                return False
+            cached = current.get_backtesting_prediction()
+            required = {
+                "date",
+                "do_predict",
+                "holdout_rmse",
+                _PRODUCED_PREDICTION_COLUMN,
+                *LABEL_COLUMNS,
+                *self._DIAGNOSTIC_COLUMNS,
+            }
+            if self.ft_params.get("DI_threshold", 0) > 0:
+                required.add("DI_values")
+            if not required.issubset(cached.columns):
+                return False
+            numeric = required - {"date", _PRODUCED_PREDICTION_COLUMN}
+            if any(not pd.api.types.is_numeric_dtype(cached[column]) for column in numeric):
+                return False
+            status = cached["do_predict"]
+            if (
+                status.isna().any()
+                or not (
+                    np.isfinite(status) & status.le(2) & np.equal(status, np.floor(status))
+                ).all()
+            ):
+                return False
+            if not cached[_PRODUCED_PREDICTION_COLUMN].isin((True, False)).all():
+                return False
+            prediction = windows[self.training_timerange.stopts]
+            expected = dates.loc[(dates >= prediction.startdt) & (dates < prediction.stopdt)]
+            actual = ensure_datetime_series(cached["date"])
+            return bool(
+                len(actual) == len(expected)
+                and actual.notna().all()
+                and actual.is_unique
+                and np.array_equal(actual.to_numpy(), expected.to_numpy())
+            )
+
+        @wraps(append)
+        def appended(
+            current: FreqaiDataKitchen,
+            predictions: pd.DataFrame,
+            status: Any,
+            backtest: pd.DataFrame,
+        ) -> pd.DataFrame:
+            result = append(predictions, status, backtest)
+            produced = current.__dict__.get("_quickadapter_prediction_produced")
+            if produced is None:
+                raise ValueError(
+                    f"[{pair}] Missing _quickadapter_prediction_produced for backtest "
+                    f"predictions: expected {len(result)} rows"
+                )
+            if len(produced) != len(result):
+                raise ValueError(
+                    f"[{pair}] Backtest prediction provenance length mismatch: "
+                    f"expected {len(result)} rows, got {len(produced)}"
+                )
+            result[_PRODUCED_PREDICTION_COLUMN] = produced
+            if "holdout_rmse" not in result:
+                result["holdout_rmse"] = np.nan
+            for column in self._DIAGNOSTIC_COLUMNS:
+                result[column] = backtest[column].to_numpy() if column in backtest else np.nan
+            return result
+
+        @wraps(fill)
+        def filled(current: FreqaiDataKitchen, frame: pd.DataFrame) -> None:
+            recorded = current.full_df
+            fill(prepared)
+            result = current.return_dataframe
+            aligned = recorded.set_index("date").reindex(
+                pd.DatetimeIndex(ensure_datetime_series(result["date"]))
+            )
+            for column in aligned:
+                result[column] = aligned[column].to_numpy()
+            if _PRODUCED_PREDICTION_COLUMN in aligned:
+                result[_PRODUCED_PREDICTION_COLUMN] = (
+                    aligned[_PRODUCED_PREDICTION_COLUMN].fillna(False).to_numpy()
+                )
+            current.return_dataframe = self._normalise_prediction_returns(result)
+
+        @wraps(load)
+        def loaded(drawer: FreqaiDataDrawer, coin: str, kitchen: FreqaiDataKitchen) -> Any:
+            # A backtest window must not inherit another window's cached metadata.
+            if not kitchen.live:
+                drawer.meta_data_dictionary.pop(coin, None)
+                drawer.model_dictionary.pop(coin, None)
+            model = load(coin, kitchen)
+            if model is not None and not kitchen.live:
+                drawer.model_dictionary[coin] = model
+                drawer.meta_data_dictionary[coin] = {
+                    METADATA: kitchen.data,
+                    FEATURE_PIPELINE: kitchen.feature_pipeline,
+                    LABEL_PIPELINE: kitchen.label_pipeline,
+                }
+                drawer.pair_dict[coin].update(
+                    model_filename=kitchen.model_filename,
+                    data_path=str(kitchen.data_path),
+                    trained_timestamp=int(kitchen.model_filename.rsplit("_", 1)[-1]),
+                )
+            return model
+
+        replacements = (models_path, populated, valid, appended, filled)
+        for name, replacement in zip(hooks, replacements, strict=True):
+            dk.__dict__[name] = MethodType(replacement, dk)
+        self.dd.__dict__["load_data"] = MethodType(loaded, self.dd)
+        try:
+            return super().start_backtesting(dataframe, metadata, dk, strategy)
+        finally:
+            for name, previous in original.items():
+                if previous is None:
+                    dk.__dict__.pop(name, None)
+                else:
+                    dk.__dict__[name] = previous
+            if original_load is None:
+                self.dd.__dict__.pop("load_data", None)
+            else:
+                self.dd.__dict__["load_data"] = original_load
+            dk.full_path = root
+
+    def _append_null_backtesting_predictions(
+        self, dk: FreqaiDataKitchen, dataframe_backtest: pd.DataFrame
+    ) -> None:
+        dk.__dict__["_quickadapter_prediction_produced"] = np.zeros(
+            len(dataframe_backtest), dtype=bool
+        )
+        super()._append_null_backtesting_predictions(dk, dataframe_backtest)
+
+    def backtesting_fit_live_predictions(self, dk: FreqaiDataKitchen) -> None:
+        """Replay the last N produced observations, excluding the current candle."""
+        size = self._fit_live_predictions_candles
+        if not size or dk.full_df.empty:
+            return
+        pair = dk.pair
+        frame = dk.full_df
+        frame["date_pred"] = ensure_datetime_series(frame["date"])
+        produced_positions = np.flatnonzero(_produced_prediction_mask(frame))
+        metrics = {
+            column: frame[column].to_numpy(copy=True)
+            for column in ("holdout_rmse",)
+            if column in frame
+        }
+        self._backtest_calibration_starts.pop(pair, None)
+        try:
+            for position in range(len(frame)):
+                end = int(np.searchsorted(produced_positions, position))
+                selected = produced_positions[max(0, end - size) : end]
+                self.dd.historic_predictions[pair] = frame.iloc[selected]
+                self._calibration_current_candles[pair] = frame["date_pred"].iloc[position]
+                self._backtest_current_metrics[pair] = {
+                    column: values[position] for column, values in metrics.items()
+                }
+                self.fit_live_predictions(dk, pair)
+                for label in dk.label_list + dk.unique_class_list:
+                    if pd.api.types.is_string_dtype(frame[label].dtype):
+                        continue
+                    frame.at[frame.index[position], f"{label}_mean"] = dk.data["labels_mean"][label]
+                    frame.at[frame.index[position], f"{label}_std"] = dk.data["labels_std"][label]
+                for column, value in dk.data["extra_returns_per_train"].items():
+                    frame.at[frame.index[position], column] = value
+        finally:
+            self._calibration_current_candles.pop(pair, None)
+            self._backtest_current_metrics.pop(pair, None)
+            self._backtest_calibration_starts.pop(pair, None)
+
+    def predict(
+        self, unfiltered_df: pd.DataFrame, dk: FreqaiDataKitchen, **kwargs
+    ) -> tuple[pd.DataFrame, NDArray[np.int_]]:
+        """Reject incomplete inputs and non-finite outputs in addition to SDK outliers."""
+        self._capture_model_metric(dk, dk.pair)
+        predictions, status = super().predict(unfiltered_df, dk, **kwargs)
+        missing = dk.data["filter_drop_index_prediction"].to_numpy(dtype=bool)
+        finite = np.isfinite(predictions.to_numpy(dtype=float)).all(axis=1)
+        invalid = missing | ~finite
+        expired = status == 2
+        np.subtract(status, invalid & ~expired, out=status)
+        dk.do_predict = status
+        dk.__dict__["_quickadapter_prediction_produced"] = ~invalid & ~expired
+        return predictions, status
+
     def define_data_pipeline(self, threads: int = -1) -> Pipeline:
         scaler = self.ft_params.get("scaler", QuickAdapterRegressorV3.SCALER_DEFAULT)
 
@@ -2275,10 +2811,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 )
                 if known_at_lookahead is not None:
                     train_known_at_lookahead = known_at_lookahead.loc[train_features.index]
-                    train_known_at_position = train_positions.to_numpy(
-                        dtype=np.int64
-                    ) + train_known_at_lookahead.to_numpy(dtype=np.int64)
-                    keep_mask &= train_known_at_position < first_test_position
+                    keep_mask &= train_known_at_lookahead.to_numpy(dtype=np.int64) < (
+                        first_test_position - train_positions.to_numpy(dtype=np.int64)
+                    )
                 else:
                     _log_known_at_none_once(dk.pair, "train_test_split causal guard")
                 (
@@ -2481,6 +3016,12 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         model = self.dd.model_dictionary.get(pair)
         previous = self.dd.pair_dict.get(pair, {})
+        if (
+            not self.live
+            and self._BACKTEST_CONTEXT_KEY in dk.data
+            and not Path(previous.get("data_path", "")).is_relative_to(dk.full_path)
+        ):
+            return None
         if model is None and not previous.get("model_filename"):
             return None
         if not self.live:
@@ -2631,13 +3172,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         row_positions = QuickAdapterRegressorV3._row_positions(features, unfiltered_df)
         known_at_lookahead = QuickAdapterRegressorV3._known_at_lookahead(features, unfiltered_df)
         if known_at_lookahead is None:
-            return (
-                row_positions.to_numpy(dtype=np.int64) + self._label_horizon_candles(pair)
-                < cutoff_position
+            return row_positions.to_numpy(dtype=np.int64) < (
+                cutoff_position - self._label_horizon_candles(pair)
             )
-        return (
-            row_positions.to_numpy(dtype=np.int64) + known_at_lookahead.to_numpy(dtype=np.int64)
-            < cutoff_position
+        return known_at_lookahead.to_numpy(dtype=np.int64) < (
+            cutoff_position - row_positions.to_numpy(dtype=np.int64)
         )
 
     def _get_validation_size(self) -> float | int:
@@ -2711,10 +3250,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                     dtype=np.int64
                 ) < first_validation_position - self._label_horizon_candles(pair)
             else:
-                train_known_at_position = train_positions.to_numpy(
+                keep_mask = known_at_lookahead.loc[train_features.index].to_numpy(
                     dtype=np.int64
-                ) + known_at_lookahead.loc[train_features.index].to_numpy(dtype=np.int64)
-                keep_mask = train_known_at_position < first_validation_position
+                ) < (first_validation_position - train_positions.to_numpy(dtype=np.int64))
             train_features = train_features.loc[keep_mask]
             train_labels = train_labels.loc[keep_mask]
 
@@ -3184,10 +3722,9 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             )
             if known_at_lookahead is not None:
                 train_known_at_lookahead = known_at_lookahead.iloc[train_idx]
-                train_known_at_position = train_positions.to_numpy(
-                    dtype=np.int64
-                ) + train_known_at_lookahead.to_numpy(dtype=np.int64)
-                keep_mask = train_known_at_position < first_test_position
+                keep_mask = train_known_at_lookahead.to_numpy(dtype=np.int64) < (
+                    first_test_position - train_positions.to_numpy(dtype=np.int64)
+                )
                 (
                     train_features,
                     train_labels,
@@ -3324,6 +3861,8 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         else:
             self._holdout_rmse[dk.pair] = np.inf
         self._session_fitted_pairs.add(dk.pair)
+        self._metric_model_identity[dk.pair] = self._kitchen_model_identity(dk)
+        self._loaded_holdout_rmse[dk.pair] = self._holdout_rmse[dk.pair]
         dk.data["extra_returns_per_train"]["holdout_rmse"] = self._holdout_rmse[dk.pair]
         if validation_size != 0:
             refit_model_training_parameters = get_refit_model_training_parameters(
@@ -3410,49 +3949,33 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     def set_initial_historic_predictions(
         self, pred_df: pd.DataFrame, dk: FreqaiDataKitchen, pair: str, strat_df: pd.DataFrame
     ) -> None:
+        self._capture_model_metric(dk, pair)
+        dk.data.setdefault("extra_returns_per_train", {}).setdefault(
+            "holdout_rmse", self._holdout_rmse.get(pair, np.inf)
+        )
         super().set_initial_historic_predictions(pred_df, dk, pair, strat_df)
-        if self.live:
-            self.dd.historic_predictions[pair] = _ensure_produced_prediction_column(
-                self.dd.historic_predictions[pair]
-            )
+        self.dd.historic_predictions[pair][_PRODUCED_PREDICTION_COLUMN] = False
 
     def build_strategy_return_arrays(
         self, dataframe: pd.DataFrame, dk: FreqaiDataKitchen, pair: str, trained_timestamp: int
     ) -> None:
-        """Record real appends and use Freqtrade's current candle for calibration."""
-        had_returns = pair in self.dd.model_return_values
-        if self.live and pair in self.dd.historic_predictions:
-            self.dd.historic_predictions[pair] = _ensure_produced_prediction_column(
-                self.dd.historic_predictions[pair]
-            )
+        """Calibrate before appending, then return explicitly marked prediction gaps."""
+        self._ensure_history_schema(dk, pair)
         if not dataframe.empty:
             self._calibration_current_candles[pair] = pd.to_datetime(
                 dataframe["date"].iloc[-1], utc=True, errors="coerce"
             )
         try:
             super().build_strategy_return_arrays(dataframe, dk, pair, trained_timestamp)
-            if self.live and had_returns:
-                history = self.dd.historic_predictions[pair]
-                current = self._calibration_current_candles.get(pair)
-                # Native append overwrites the last row on the same date, but
-                # returns early if the strategy candle predates the saved one.
-                if (
-                    current is not None
-                    and pd.notna(current)
-                    and not history.empty
-                    and pd.to_datetime(history["date_pred"].iloc[-1], utc=True) == current
-                ):
-                    history.at[history.index[-1], _PRODUCED_PREDICTION_COLUMN] = True
-                    returned = self.dd.model_return_values[pair]
-                    if not returned.empty and _PRODUCED_PREDICTION_COLUMN in returned:
-                        returned.at[returned.index[-1], _PRODUCED_PREDICTION_COLUMN] = True
-            if _PRODUCED_PREDICTION_COLUMN in dk.return_dataframe:
-                dk.return_dataframe = dk.return_dataframe.drop(columns=_PRODUCED_PREDICTION_COLUMN)
+            dk.return_dataframe = self._normalise_prediction_returns(dk.return_dataframe)
         finally:
             self._calibration_current_candles.pop(pair, None)
 
     def _persist_calibration_start(self, pair: str, start: pd.Timestamp) -> None:
         """Persist a UTC boundary without mutating Freqtrade's shared empty extras."""
+        if not self.live:
+            self._backtest_calibration_starts[pair] = start.isoformat()
+            return
         self.dd.get_pair_dict_info(pair)
         pair_info = self.dd.pair_dict[pair]
         extras = pair_info.get("extras", {})
@@ -3512,8 +4035,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         decision_time = self._calibration_decision_time(dk, pair, history)
         if decision_time is None:
             return history.iloc[:0]
-        self.dd.get_pair_dict_info(pair)
-        raw_start = self.dd.pair_dict[pair].get("extras", {}).get(self._CALIBRATION_START_KEY)
+        if self.live:
+            self.dd.get_pair_dict_info(pair)
+            raw_start = self.dd.pair_dict[pair].get("extras", {}).get(self._CALIBRATION_START_KEY)
+        else:
+            raw_start = self._backtest_calibration_starts.get(pair)
         start = (
             pd.to_datetime(raw_start, utc=True, errors="coerce")
             if isinstance(raw_start, str)
@@ -3532,7 +4058,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         # Include the persisted boundary itself: history may have been rebuilt
         # after a restart, leaving no rows from the preceding warmup segment.
         gap_starts = eligible.loc[eligible["date_pred"].diff().gt(max_gap), "date_pred"]
-        if not eligible.empty and eligible["date_pred"].iloc[0] - start > max_gap:
+        if self.live and not eligible.empty and eligible["date_pred"].iloc[0] - start > max_gap:
             gap_starts = pd.concat([eligible["date_pred"].iloc[:1], gap_starts])
         if not gap_starts.empty:
             start = gap_starts.iloc[-1]
@@ -3572,20 +4098,23 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 ),
             )
 
-        history = self.dd.historic_predictions[pair]
-        if self.live:
-            history = _dedupe_historic_predictions_on_date_pred(history, pair)
-            calibration_history = self._calibration_history(
-                dk, pair, history, fit_live_predictions_candles
+        if self.live and pair not in self._session_fitted_pairs:
+            self._capture_model_metric(dk, pair)
+        history = _dedupe_historic_predictions_on_date_pred(
+            self.dd.historic_predictions[pair], pair
+        )
+        calibration_history = self._calibration_history(
+            dk, pair, history, fit_live_predictions_candles
+        )
+        remaining = fit_live_predictions_candles - len(calibration_history)
+        warmed_up = remaining <= 0
+        if not warmed_up:
+            logger.debug(
+                "[%s] Fit live predictions not warmed up: %s produced observations "
+                "until warmup completion",
+                pair,
+                remaining,
             )
-            remaining = fit_live_predictions_candles - len(calibration_history)
-            warmed_up = remaining <= 0
-            if not warmed_up:
-                logger.warning(
-                    f"[{pair}] Fit live predictions not warmed up: {remaining} produced observations until warmup completion"
-                )
-        else:
-            calibration_history = history
         pred_df = calibration_history.tail(fit_live_predictions_candles).reset_index(drop=True)
 
         di_values = pred_df.get("DI_values")
@@ -3704,41 +4233,30 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         ).get("label_natr_multiplier")
 
         current_holdout_rmse = self._holdout_rmse.get(pair)
+        decision_time = self._calibration_decision_time(dk, pair, history)
         if not self.live:
-            holdout_series = dk.full_df.get("holdout_rmse")
-            history_dates = ensure_datetime_series(self.dd.historic_predictions[pair]["date"])
-            full_dates = ensure_datetime_series(dk.full_df["date"])
-            current_dates = full_dates.loc[full_dates > history_dates.max()]
-            if holdout_series is None:
-                logger.warning(
-                    f"[{pair}] 'holdout_rmse' column missing from full_df during "
-                    f"replay; keeping the last in-memory value (may be stale)"
-                )
-            elif not current_dates.empty:
-                current_holdout_rmse = holdout_series.loc[current_dates.index[0]]
-                if pd.isna(current_holdout_rmse):
-                    logger.warning(
-                        f"[{pair}] Replayed holdout_rmse is NaN at "
-                        f"{current_dates.index[0]}; defaulting to inf"
-                    )
+            # The replay cursor supplies original per-candle metadata in constant time.
+            current_metrics = self._backtest_current_metrics.get(pair, {})
+            current_holdout_rmse = current_metrics.get("holdout_rmse", np.inf)
         elif pair not in self._session_fitted_pairs:
-            decision_time = self._calibration_decision_time(dk, pair, history)
-            if decision_time is not None and "holdout_rmse" in history:
-                # Model metadata can predate the current calibration period, but not
-                # come from a future or unproduced prediction.
+            current_holdout_rmse = self._loaded_holdout_rmse.get(pair)
+            if (
+                current_holdout_rmse is None
+                and decision_time is not None
+                and "holdout_rmse" in history
+            ):
                 produced = (
                     _produced_prediction_mask(history)
                     & history["date_pred"].le(decision_time).to_numpy()
                 )
-                holdout_values = pd.to_numeric(
-                    history.loc[produced, "holdout_rmse"], errors="coerce"
-                ).dropna()
+                holdout_values = history.loc[produced, "holdout_rmse"]
                 if not holdout_values.empty:
-                    current_holdout_rmse = float(holdout_values.iloc[-1])
-        holdout_rmse = QuickAdapterRegressorV3.optuna_validate_value(current_holdout_rmse)
-        dk.data["extra_returns_per_train"]["holdout_rmse"] = (
-            holdout_rmse if holdout_rmse is not None else np.inf
+                    current_holdout_rmse = holdout_values.iloc[-1]
+        dk.data["extra_returns_per_train"]["holdout_rmse"] = self._coerce_holdout_rmse(
+            current_holdout_rmse
         )
+        if self.live:
+            self._ensure_history_schema(dk, pair)
 
     def _label_hpo_dataframe_as_of_prediction_time(
         self,
@@ -3747,19 +4265,22 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     ) -> pd.DataFrame:
         """Return pair OHLCV bounded to the current FreqAI prediction time.
 
-        In backtests, ``historic_predictions`` holds the preceding prediction
-        window and ``dk.full_df`` is the full feature frame; the current
-        prediction time is the first ``dk.full_df`` timestamp strictly after the
-        last recorded prediction. Live and dry-run modes rely on the already
-        point-in-time DataProvider frame. This explicit backtest bound is
-        required because DataProvider otherwise exposes the complete historical
-        timerange.
+        An explicit calibration cursor bounds backtest input, including the current candle.
+        Without a cursor, infer the next candle from the produced-prediction history.
+        Live providers already expose their current candle window.
         """
         pair_dataframe = self.data_provider.get_pair_dataframe(
             pair=pair, timeframe=self.config.get("timeframe")
         )
         if self.live or pair_dataframe.empty:
             return pair_dataframe
+
+        if pair in self._calibration_current_candles:
+            current_candle = self._calibration_current_candles[pair]
+            if pd.isna(current_candle):
+                return pair_dataframe.iloc[:0]
+            pair_dates = ensure_datetime_series(pair_dataframe["date"])
+            return pair_dataframe.loc[pair_dates <= current_candle]
 
         history_dates = ensure_datetime_series(self.dd.historic_predictions[pair]["date"])
         if history_dates.empty:
@@ -3808,7 +4329,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
     @staticmethod
     def optuna_validate_value(value: Any) -> float | None:
-        return value if isinstance(value, (int, float)) and np.isfinite(value) else None
+        return coerce_finite_float(value)
 
     def min_max_pred(
         self,
@@ -3974,16 +4495,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         fallback: float,
     ) -> float:
         try:
-            reduced = reducer(pred_label)
+            reduced = coerce_finite_float(reducer(pred_label))
         except Exception:
-            reduced = None
-        if (
-            reduced is not None
-            and isinstance(reduced, (int, float, np.number))
-            and np.isfinite(reduced)
-        ):
-            return float(reduced)
-        return fallback
+            return fallback
+        return fallback if reduced is None else reduced
 
     # ±2.0 fallbacks are out-of-[-1, 1] normalized-range sentinels.
     @staticmethod

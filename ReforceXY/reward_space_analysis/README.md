@@ -269,9 +269,10 @@ artifacts are written.
   (Simulation-only).
 - **`--trading_mode`** (spot|margin|futures, default: spot) – spot: no shorts;
   margin/futures: shorts enabled. (Simulation-only).
-- **`--max_duration_ratio`** (float, default: 2.5) – Upper multiple for sampled
-  trade durations (idle derived). (Simulation-only; not in reward params; cannot
-  be set via `--params`).
+- **`--max_duration_ratio`** (float, default: 2.5) – Synthetic trade-duration
+  bound: `max(1, trunc(max_trade_duration_candles * max_duration_ratio))`
+  candles. At the bound, sampling chooses the valid exit with probability 1.
+  This is not a runtime exit timeout. (Simulation-only; not in `--params`).
 - **`--pnl_base_std`** (float, default: 0.02) – Base standard deviation for
   synthetic PnL generation (pre-scaling). (Simulation-only).
 - **`--pnl_duration_vol_scale`** (float, default: 0.5) – Additional PnL
@@ -293,10 +294,11 @@ be overridden via `--params`.
   0.03=3%).
 - **`--risk_reward_ratio`** (float, default: 2.0) – Risk-reward multiplier.
 - **`--action_masking`** (bare flag, default: true) – Disable via
-  `--params action_masking=false`. With masking enabled, sample
-  only valid actions. When disabled, sample an invalid action with 10% probability
-  and apply the configured invalid-action penalty. Invalid actions leave the held
-  position unchanged, except for an independent terminal liquidation.
+  `--params action_masking=false`. Masking samples only valid actions. Without
+  masking, invalid actions have 10% probability except at the forced duration
+  exit. They retain the current position's time cost and add the configured
+  invalid-action penalty. An independent terminal liquidation can still close
+  the position.
 
 ### Reward & Shaping
 
@@ -338,8 +340,9 @@ Adjustment metadata for finite native durations records the final normalized
 integer. Strict validation checks a numeric gamma in its native precision before
 normalizing it.
 Simulation consumes extended integer durations without a binary64 cap. Ordinary
-fractional duration caps retain float-product truncation; extended caps use the
-supplied ratio's exact rational value. Duration relationship tables keep candle
+fractional duration bounds use float-product truncation; extended bounds use the
+supplied ratio's exact rational value. Both have a one-candle physical minimum.
+Duration relationship tables keep candle
 units when their float bounds and labels are safe. At larger scales, the same
 12 right-closed uniform bins use exact assignment and explicitly declared
 `duration / max_trade_duration_candles` coordinates; the first bin includes zero.
@@ -384,12 +387,43 @@ the first named group (`pnl+`) has higher rewards than the second (`pnl-`).
 | `base_factor`    | 100.0   | Base reward scale           |
 | `invalid_action` | -2.0    | Penalty for invalid actions |
 
+**Reward composition:**
+
+```text
+R_base      = invalid_penalty + idle_penalty + hold_penalty + exit_reward
+R_train     = R_base + reward_shaping + entry_additive + exit_additive
+R_selection = R_base + entry_additive + exit_additive
+```
+
+The invalid penalty is `invalid_action` for an invalid unmasked action, and zero otherwise.
+
+Time costs use the pre-action duration when the action leaves the position
+unchanged, including invalid actions. A valid entry has no idle cost; a valid
+exit has no hold cost. `exit_reward = pnl * exit_factor` on a valid exit.
+Episode termination also adds a liquidation exit reward and any enabled exit
+additive at the next marked price if a position remains open.
+
+Training uses `R_train`. Runtime evaluation sums `R_selection` without discounting
+for checkpoint selection, HPO and no-improvement stopping. The synthetic `reward`
+column remains `R_train`; it is not the runtime selection score or portfolio
+profit. Canonical mode suppresses both optional additives.
+
+For transition-faithful Python API calculations, supply the actual `next_context`
+after time advances and before terminal liquidation. It is required, with the
+resulting position's side, whenever `terminated=True` leaves a position open.
+Missing or wrong-side terminal states raise `ValueError`. Without a nonterminal
+`next_context`, the helper evaluates its local state approximation, not an
+observed market transition.
+
 #### Exit Factor
 
 The exit factor is computed as:
 
 `exit_factor` = `base_factor` · `pnl_target_coefficient` ·
 `efficiency_coefficient` · `time_attenuation_coefficient`
+
+Time attenuation reduces the magnitude of both profitable and losing exit
+rewards. Holding costs are separate.
 
 ##### PnL Target
 
@@ -490,17 +524,35 @@ where `kernel_function` depends on `exit_attenuation_mode`. See
 
 #### Duration Penalties
 
-| Parameter                    | Default | Description                                                                                 |
-| ---------------------------- | ------- | ------------------------------------------------------------------------------------------- |
-| `max_trade_duration_candles` | 128     | Trade duration cap                                                                          |
-| `max_idle_duration_candles`  | None    | Idle hazard threshold; missing/None derives 4× trade cap; idle clock keeps counting past it |
-| `idle_penalty_ratio`         | 1.0     | Idle penalty ratio                                                                          |
-| `idle_penalty_power`         | 1.025   | Idle penalty exponent                                                                       |
-| `hold_penalty_ratio`         | 1.0     | Hold penalty ratio                                                                          |
-| `hold_penalty_power`         | 1.025   | Hold penalty exponent                                                                       |
+| Parameter                    | Default | Description                                                                   |
+| ---------------------------- | ------- | ----------------------------------------------------------------------------- |
+| `max_trade_duration_candles` | 128     | Trade-duration scale and overtime threshold; not an exit timeout              |
+| `max_idle_duration_candles`  | None    | Idle scale; missing/None derives 4× the trade scale; the clock keeps counting |
+| `idle_penalty_ratio`         | 1.0     | Idle penalty ratio                                                            |
+| `idle_penalty_power`         | 1.025   | Idle penalty exponent                                                         |
+| `hold_penalty_ratio`         | 1.0     | Hold penalty ratio                                                            |
+| `hold_penalty_power`         | 1.025   | Hold penalty exponent                                                         |
 
-An explicit zero threshold uses denominator 1 and does not disable the idle
-penalty.
+Let `B = base_factor`, `a = profit_aim`, `q = risk_reward_ratio`,
+`D = max(1, max_trade_duration_candles)` and
+`I = max(1, effective max_idle_duration_candles)`. The time-cost scale is
+`C = B * a / q`, distinct from the PnL target `a * q`.
+
+For unchanged positions:
+
+```text
+idle_penalty = -C * idle_penalty_ratio * (idle_duration / I)^idle_penalty_power
+
+hold_penalty = 0                                                   if trade_duration / D < 1
+             = -C * hold_penalty_ratio
+               * (trade_duration / D - 1)^hold_penalty_power        otherwise
+```
+
+Idle applies while neutral; hold applies while long or short. Invalid no-op
+actions keep these costs, even when `invalid_action=0`. Durations are candles,
+not elapsed seconds. An explicit idle scale of zero uses denominator 1; it
+does not disable the cost. With exponent zero, `0^0 = 1`, so the hold cost
+already applies at its threshold.
 
 #### Validation
 
@@ -572,9 +624,9 @@ where:
 - `m_dur = 1.0` if `r_pnl ≥ 0` (profit side)
 - `m_dur = risk_reward_ratio` if `r_pnl < 0` (loss side)
 
-The loss-side duration multiplier (`m_dur = risk_reward_ratio`) scales the
-duration penalty when holding losing positions, encouraging faster exits from
-losses compared to symmetric treatment.
+The loss-side multiplier changes the duration term of the potential, not the
+base holding cost or optional additives. It does not establish faster exits
+or better financial outcomes for a fitted policy.
 
 #### Entry Additive (Optional)
 
@@ -586,6 +638,18 @@ losses compared to symmetric treatment.
 | `entry_additive_transform_pnl`      | tanh    | PnL transform         |
 | `entry_additive_transform_duration` | tanh    | Duration transform    |
 
+Both optional additives use the same signal, with `k = entry` or `exit`:
+
+```text
+A_k(pnl, r_dur) = base_factor * k_additive_ratio * 0.5
+                 * [T_pnl(k_additive_gain * r_pnl)
+                    + sign_eps(r_pnl) * T_dur(k_additive_gain * max(r_dur, 0))]
+```
+
+Use `r_pnl` and `sign_eps` from the hold-potential definition, and the selected
+additive's transforms. There is no loss-side `risk_reward_ratio` multiplier.
+Entry uses fee-aware PnL at the fill with `r_dur = 0`.
+
 #### Exit Additive (Optional)
 
 | Parameter                          | Default | Description          |
@@ -595,6 +659,11 @@ losses compared to symmetric treatment.
 | `exit_additive_gain`               | 1.0     | Gain                 |
 | `exit_additive_transform_pnl`      | tanh    | PnL transform        |
 | `exit_additive_transform_duration` | tanh    | Duration transform   |
+
+Exit uses PnL and trade duration at the exit fill, with
+`r_dur = trade_duration / max(1, max_trade_duration_candles)`. A terminal
+liquidation uses the actual next marked PnL and advanced duration instead.
+Additives are zero when disabled and are always suppressed in canonical mode.
 
 ### Exit Attenuation Kernels
 
@@ -764,8 +833,9 @@ the manifest is produced after reporting succeeds.
 
 The `sample_entry_prob`, `sample_exit_prob`, and `sample_neutral_prob` columns in
 `reward_samples.csv` report marginal probabilities of valid actions when applicable.
-With masking disabled, these probabilities include the 90% valid-action mass;
-they are not conditional on drawing a valid action.
+With masking disabled, ordinary draws include the 90% valid-action mass; they
+are not conditional on drawing a valid action. At the synthetic duration bound,
+the corresponding valid exit has probability 1 and invalid actions are not drawn.
 
 ### Manifest (`manifest.json`)
 

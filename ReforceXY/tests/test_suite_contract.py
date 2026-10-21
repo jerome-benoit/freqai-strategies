@@ -5,6 +5,8 @@ import random
 import sys
 import unittest
 from pathlib import Path
+from types import ModuleType
+from unittest import mock
 
 import numpy as np
 import torch
@@ -73,15 +75,26 @@ class SuiteContractTest(unittest.TestCase):
                 )
 
     def test_no_measured_file_is_registered_under_a_bare_stem(self):
-        # CI puts `user_data/strategies` on PYTHONPATH, so a bare `import RLAgentStrategy`
-        # would resolve. A dotted name is the only one the production import uses.
-        for name, _ in _source_files_under(MEASURED_TREE):
+        expected = {
+            Path(importlib.import_module(name).__file__).resolve(): name
+            for name in PRODUCTION_NAMES
+        }
+        for name, path in _source_files_under(MEASURED_TREE):
             with self.subTest(module=name):
-                self.assertTrue(
-                    name.startswith("ReforceXY.user_data."),
-                    "a measured file registered under a bare stem has a second module object, "
-                    "and every process-global restore would clean the copy under test never uses",
-                )
+                self.assertEqual(expected[path], name)
+
+    def test_file_identity_guard_rejects_strategy_and_model_aliases(self):
+        for canonical in PRODUCTION_NAMES:
+            with self.subTest(module=canonical):
+                module = ModuleType("arbitrary_production_alias")
+                module.__file__ = importlib.import_module(canonical).__file__
+                result = unittest.TestResult()
+                with mock.patch.dict(sys.modules, {module.__name__: module}):
+                    SuiteContractTest(
+                        "test_each_measured_source_file_is_registered_under_exactly_one_name"
+                    ).run(result)
+                self.assertEqual(result.errors, [])
+                self.assertEqual(len(result.failures), 1)
 
     def test_every_test_module_is_registered_under_its_bare_stem(self):
         # The half that catches a shadow copy of the test tree itself. A measured-tree walk

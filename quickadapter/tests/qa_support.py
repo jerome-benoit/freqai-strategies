@@ -66,8 +66,8 @@ def _merge(base: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:
 def model_config(tmp_path: Path | str, **overrides: Any) -> dict[str, Any]:
     """Return a private Freqtrade config rooted at `tmp_path`, deep-merged with `overrides`."""
     config = _merge(_BASE_CONFIG, overrides)
-    config["user_data_dir"] = tmp_path
-    config["runmode"] = RunMode.DRY_RUN
+    config["user_data_dir"] = Path(config.get("user_data_dir", tmp_path))
+    config.setdefault("runmode", RunMode.DRY_RUN)
     return config
 
 

@@ -9,6 +9,7 @@ from unittest import mock
 
 import numpy as np
 import optuna
+import Utils
 from EnumErrors import enum_error_message
 from optuna.distributions import FloatDistribution, IntDistribution
 from optuna.trial import FrozenTrial, TrialState
@@ -160,6 +161,57 @@ def seed_trial(
     else:
         study.add_trial(frozen(0, value=0.5, params={"alpha": 0.5}, distributions={"alpha": ALPHA}))
     return target
+
+
+class QuarantineCollisionTest(QaTestCase):
+    def test_real_callers_skip_ninth_collision_and_refuse_exhausted_targets(self):
+        now = datetime.datetime(2026, 1, 1, tzinfo=datetime.UTC)
+        stamp = now.strftime("%Y%m%dT%H%M%S%fZ")
+        for kind in ("journal", "best_params"):
+            for occupied in (9, 100):
+                with self.subTest(kind=kind, occupied=occupied), temporary_directory() as directory:
+                    source = directory / ("optuna.log" if kind == "journal" else "best.json")
+                    source.write_text("corrupt payload")
+                    targets = []
+                    for index in range(occupied):
+                        suffix = "" if index == 0 else f"-{index}"
+                        target = source.with_name(f"{source.name}.corrupt-{stamp}{suffix}")
+                        target.write_text(f"preserved {index}")
+                        targets.append(target)
+                    clock_target = (
+                        f"{REGRESSOR.__module__}.datetime"
+                        if kind == "journal"
+                        else "Utils.datetime"
+                    )
+                    with mock.patch(clock_target) as clock:
+                        clock.now.return_value = now
+                        if kind == "journal":
+
+                            def call(source=source):
+                                return REGRESSOR._optuna_quarantine_journal(
+                                    source, PAIR, ValueError("corrupt")
+                                )
+
+                        else:
+
+                            def call(source=source):
+                                return Utils._quarantine_corrupt_optuna_best_params(
+                                    source, PAIR, "hp", ValueError("corrupt"), None
+                                )
+
+                        if occupied == 100:
+                            with self.assertRaises(FileExistsError):
+                                call()
+                            self.assertEqual(source.read_text(), "corrupt payload")
+                        else:
+                            result = call()
+                            self.assertEqual(result.name, f"{source.name}.corrupt-{stamp}-9")
+                            self.assertEqual(result.read_text(), "corrupt payload")
+                            self.assertFalse(source.exists())
+                    self.assertEqual(
+                        [target.read_text() for target in targets],
+                        [f"preserved {index}" for index in range(occupied)],
+                    )
 
 
 class RegressorOptunaStudyTest(QaTestCase):

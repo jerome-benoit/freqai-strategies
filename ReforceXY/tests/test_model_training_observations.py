@@ -97,23 +97,27 @@ class TrainingObservationsTest(QaTestCase):
                 metadata_path = dk.data_path / f"{dk.model_filename}_{METADATA}.json"
                 metadata = json.loads(metadata_path.read_text())
                 current_generation = metadata[model._DEPLOYMENT_COORDINATE_MARKER_KEY]
-                metadata[model._DEPLOYMENT_COORDINATE_MARKER_KEY] = (
-                    "chronological-frozen-pipelines-v2"
-                )
-                metadata_path.write_text(json.dumps(metadata))
-                for cached in (False, True):
-                    with self.subTest(legacy_cached=cached):
-                        model.dd.model_dictionary.clear()
-                        model.dd.meta_data_dictionary.clear()
-                        if cached:
-                            inference = model.dd.load_data(dk.pair, dk)
-                            action, _ = inference.predict(
-                                np.zeros(inference.observation_space.shape, dtype=np.float32),
-                                deterministic=True,
-                            )
-                            self.assertTrue(inference.action_space.contains(action))
-                        with self.assertRaisesRegex(DependencyException, "Reset trained models"):
-                            model._resolve_deployment_state(dk, dk.pair)
+                for legacy_generation in (
+                    "chronological-frozen-pipelines-v2",
+                    "chronological-frozen-pipelines-pbrs-v3",
+                ):
+                    metadata[model._DEPLOYMENT_COORDINATE_MARKER_KEY] = legacy_generation
+                    metadata_path.write_text(json.dumps(metadata))
+                    for cached in (False, True):
+                        with self.subTest(
+                            legacy_generation=legacy_generation, legacy_cached=cached
+                        ):
+                            model.dd.model_dictionary.clear()
+                            model.dd.meta_data_dictionary.clear()
+                            if cached:
+                                inference = model.dd.load_data(dk.pair, dk)
+                                action, _ = inference.predict(
+                                    np.zeros(inference.observation_space.shape, dtype=np.float32),
+                                    deterministic=True,
+                                )
+                                self.assertTrue(inference.action_space.contains(action))
+                            with self.assertRaises(DependencyException):
+                                model._resolve_deployment_state(dk, dk.pair)
                 metadata[model._DEPLOYMENT_COORDINATE_MARKER_KEY] = current_generation
                 metadata_path.write_text(json.dumps(metadata))
                 model.dd.meta_data_dictionary.clear()
@@ -284,7 +288,7 @@ class TrainingObservationsTest(QaTestCase):
                     "close_price": [100.0],
                 }
             )
-            candles = pd.DataFrame({"date": [date]})
+            candles = pd.DataFrame({"date": [date, date + pd.Timedelta(minutes=5)]})
             drawer.set_initial_return_values(pair, pd.DataFrame({"&-action": [99.0]}), candles)
             self.assertNotIn("_freqai_strategies_produced", drawer.historic_predictions[pair])
             self.assertNotIn(
@@ -319,11 +323,23 @@ class TrainingObservationsTest(QaTestCase):
 
             # Native same-candle append overwrites a bootstrap candle. A rejected
             # prediction is nevertheless produced and must enter the statistics.
+            dk.__dict__["_reforcexy_prediction_produced"] = np.array([True])
             model.dd.append_model_predictions(
                 pair, pd.DataFrame({"&-action": [3.0]}), np.array([0]), dk, strat_df
             )
             model.fit_live_predictions(dk, pair)
             self.assertEqual(dk.data["labels_mean"]["&-action"], 3.0)
+            dk.__dict__["_reforcexy_prediction_produced"] = np.array([False])
+            model.dd.append_model_predictions(
+                pair, pd.DataFrame({"&-action": [0.0]}), np.array([0]), dk, strat_df
+            )
+            model.fit_live_predictions(dk, pair)
+            self.assertEqual(dk.data["labels_mean"]["&-action"], 0.0)
+            self.assertFalse(model.dd.historic_predictions[pair][marker].iloc[-1])
+            dk.__dict__["_reforcexy_prediction_produced"] = np.array([True])
+            model.dd.append_model_predictions(
+                pair, pd.DataFrame({"&-action": [3.0]}), np.array([0]), dk, strat_df
+            )
             self.assertNotIn(
                 marker, model.dd.attach_return_values_to_return_dataframe(pair, strat_df)
             )
@@ -364,6 +380,13 @@ class TrainingObservationsTest(QaTestCase):
             self.assertEqual(len(model.dd.historic_predictions[pair]), len(resumed))
             model.fit_live_predictions(dk, pair)
             self.assertEqual(dk.data["labels_mean"]["&-action"], 6.0)
+            before_older = model.dd.historic_predictions[pair].copy(deep=True)
+            dk.__dict__["_reforcexy_prediction_produced"] = np.array([False])
+            model.dd.append_model_predictions(
+                pair, pd.DataFrame({"&-action": [99.0]}), np.array([0]), dk, strat_df
+            )
+            pd.testing.assert_frame_equal(model.dd.historic_predictions[pair], before_older)
+            dk.__dict__["_reforcexy_prediction_produced"] = np.array([True])
 
             model.dd.save_historic_predictions_to_disk()
             restored = ReforceXY(config=config)
@@ -378,6 +401,173 @@ class TrainingObservationsTest(QaTestCase):
             self.assertNotIn(
                 marker, restored.dd.attach_return_values_to_return_dataframe(pair, resumed)
             )
+
+    def test_native_schema_extension_and_restart_preserve_unknown_metadata(self):
+        pair = "BTC/USDT"
+        marker = "_freqai_strategies_produced"
+        with tempfile.TemporaryDirectory() as temp:
+            config = model_config(temp)
+            config["freqai"]["fit_live_predictions_candles"] = 6
+            model = ReforceXY(config=config)
+            model.live = True
+            self.addCleanup(model.close_envs)
+            dates = pd.date_range("2026-01-01", periods=6, freq="5min", tz="UTC")
+            candles = pd.DataFrame(
+                {
+                    "date": dates,
+                    "high": 101.0,
+                    "low": 99.0,
+                    "close": 100.0,
+                }
+            )
+            model.dd.historic_predictions[pair] = pd.DataFrame(
+                {
+                    "date_pred": dates[:4],
+                    "&-action": [0.0, 7.0, 99.0, 88.0],
+                    "do_predict": [0, 1, 0, 2],
+                    "high_price": 101.0,
+                    "low_price": 99.0,
+                    "close_price": 100.0,
+                    marker: [True, False, np.nan, np.nan],
+                    "existing_metric": [0.0, np.nan, 2.0, 3.0],
+                }
+            )
+            dk = FreqaiDataKitchen(config, live=True, pair=pair)
+            dk.label_list = ["&-action", "&-new_label"]
+            dk.unique_class_list = ["class_probability"]
+            dk.data["labels_mean"] = dict.fromkeys(dk.label_list + dk.unique_class_list, 0.0)
+            dk.data["labels_std"] = dict.fromkeys(dk.label_list + dk.unique_class_list, 0.0)
+            dk.data["extra_returns_per_train"] = {
+                "new_metric": 12.0,
+                "python_flag": True,
+                "numpy_flag": np.bool_(False),
+            }
+            dk.__dict__["_reforcexy_prediction_produced"] = np.array([True])
+            model.dd.append_model_predictions(
+                pair,
+                pd.DataFrame(
+                    {
+                        "&-action": [0.0],
+                        "&-new_label": [2.0],
+                        "class_probability": [0.75],
+                    }
+                ),
+                np.array([0]),
+                dk,
+                candles.iloc[:5],
+            )
+            history = model.dd.historic_predictions[pair]
+            for column in (
+                "new_metric",
+                "python_flag",
+                "numpy_flag",
+                "&-action_mean",
+                "&-action_std",
+                "&-new_label",
+                "&-new_label_mean",
+                "&-new_label_std",
+                "class_probability",
+                "class_probability_mean",
+                "class_probability_std",
+            ):
+                self.assertTrue(history[column].iloc[:4].isna().all(), column)
+            self.assertEqual(history["new_metric"].iloc[-1], 12.0)
+            self.assertNotIn("DI_values", history)
+            self.assertIsInstance(history["python_flag"].iloc[-1], (bool, np.bool_))
+            self.assertIsInstance(history["numpy_flag"].iloc[-1], (bool, np.bool_))
+            self.assertEqual(history["python_flag"].dtype, object)
+            self.assertEqual(history["numpy_flag"].dtype, object)
+            self.assertEqual(history[marker].iloc[:2].tolist(), [True, False])
+            self.assertTrue(pd.isna(history[marker].iloc[2]))
+            self.assertFalse(history[marker].iloc[3])
+            model.dd.save_historic_predictions_to_disk()
+            restarted = ReforceXY(config=config)
+            restarted.live = True
+            self.addCleanup(restarted.close_envs)
+            restarted.dd.set_initial_return_values(
+                pair, pd.DataFrame({"&-action": np.zeros(6)}), candles
+            )
+            restored = restarted.dd.historic_predictions[pair]
+            self.assertTrue(restored["new_metric"].iloc[:4].isna().all())
+            self.assertEqual(restored["new_metric"].iloc[4], 12.0)
+            for column, expected in (("python_flag", True), ("numpy_flag", False)):
+                self.assertTrue(restored[column].iloc[:4].isna().all())
+                self.assertEqual(restored[column].dtype, object)
+                self.assertIsInstance(restored[column].iloc[4], (bool, np.bool_))
+                self.assertEqual(restored[column].iloc[4], expected)
+            self.assertEqual(restored["existing_metric"].iloc[0], 0.0)
+            self.assertTrue(pd.isna(restored["existing_metric"].iloc[1]))
+            self.assertTrue(pd.isna(restored[marker].iloc[2]))
+            self.assertEqual(
+                restored[marker].iloc[[0, 1, 3, 4, 5]].tolist(), [True, False, False, True, False]
+            )
+            restarted.fit_live_predictions(dk, pair)
+            self.assertEqual(dk.data["labels_mean"]["&-action"], 0.0)
+
+    def test_native_expiration_ignores_stale_production_and_resume_records_real_zero(self):
+        pair = "BTC/USDT"
+        marker = "_freqai_strategies_produced"
+        with tempfile.TemporaryDirectory() as temp:
+            config = model_config(temp)
+            config["freqai"]["fit_live_predictions_candles"] = 3
+            model = ReforceXY(config=config)
+            model.live = True
+            model.can_short = False
+            model.get_state_info = lambda pair: (0.5, 0.0, 0)
+            self.addCleanup(model.close_envs)
+            dk = FreqaiDataKitchen(config, live=True, pair=pair)
+            dk.label_list = ["&-action"]
+            dk.unique_class_list = []
+            dk.data["extra_returns_per_train"] = {}
+            dates = pd.date_range("2026-01-01", periods=3, freq="5min", tz="UTC")
+            candles = pd.DataFrame(
+                {
+                    "date": dates,
+                    "high": 101.0,
+                    "low": 99.0,
+                    "close": 100.0,
+                }
+            )
+            model.set_initial_historic_predictions(
+                pd.DataFrame({"&-action": [0.0]}), dk, pair, candles.iloc[:1]
+            )
+            model.dd.set_initial_return_values(
+                pair, pd.DataFrame({"&-action": [0.0]}), candles.iloc[:1]
+            )
+            dk.data["labels_mean"] = {"&-action": 0.0}
+            dk.data["labels_std"] = {"&-action": 0.0}
+            model.dd.append_model_predictions(
+                pair, pd.DataFrame({"&-action": [4.0]}), np.array([0]), dk, candles.iloc[:1]
+            )
+            dk.__dict__["_reforcexy_prediction_produced"] = np.ones(7, dtype=bool)
+            config["freqai"]["expiration_hours"] = 1
+            model.dk = dk
+            with mock.patch.object(
+                model, "predict", side_effect=AssertionError("expired inference")
+            ):
+                model.build_strategy_return_arrays(candles.iloc[:2], dk, pair, 0)
+            self.assertEqual(dk.return_dataframe["do_predict"].iloc[-1], 2)
+            self.assertEqual(dk.return_dataframe["&-action"].iloc[-1], 0.0)
+            self.assertFalse(model.dd.historic_predictions[pair][marker].iloc[-1])
+            model.fit_live_predictions(dk, pair)
+            self.assertEqual(dk.data["labels_mean"]["&-action"], 4.0)
+
+            def resume(frame, kitchen, **kwargs):
+                policy = RecordingPolicy()
+                kitchen.do_predict = np.zeros(len(frame), dtype=int)
+                prediction = model.rl_model_predict(pd.DataFrame({"f": [1.0]}), kitchen, policy)
+                self.assertEqual(len(policy.observations), 1)
+                return prediction, kitchen.do_predict
+
+            with (
+                mock.patch.object(dk, "check_if_model_expired", return_value=False),
+                mock.patch.object(model, "predict", side_effect=resume),
+            ):
+                model.build_strategy_return_arrays(candles, dk, pair, 0)
+            self.assertTrue(model.dd.historic_predictions[pair][marker].iloc[-1])
+            self.assertEqual(model.dd.historic_predictions[pair]["&-action"].iloc[-1], 0.0)
+            model.fit_live_predictions(dk, pair)
+            self.assertEqual(dk.data["labels_mean"]["&-action"], 2.0)
 
     def test_partially_marked_history_restores_provable_observations(self):
         pair = "BTC/USDT"
