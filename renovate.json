@@ -4,10 +4,16 @@
     "config:recommended",
     "abandonments:recommended",
     ":configMigration",
+    "helpers:pinGitHubActionDigests",
+    "security:minimumReleaseAgePypi",
     "group:allNonMajor",
     "schedule:daily",
     ":maintainLockFilesWeekly"
   ],
+  "osvVulnerabilityAlerts": true,
+  "vulnerabilityAlerts": {
+    "addLabels": ["security"]
+  },
   "customManagers": [
     {
       "customType": "regex",
