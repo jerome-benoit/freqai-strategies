@@ -15,7 +15,7 @@ from freqtrade.exchange import timeframe_to_seconds
 from freqtrade.freqai.data_drawer import FEATURE_PIPELINE, METADATA, FreqaiDataDrawer
 from freqtrade.freqai.data_kitchen import FreqaiDataKitchen
 from optuna import TrialPruned, create_study
-from qa_support import QaTestCase, RecordingPolicy, model_config
+from qa_support import PAIR, PROJECT_ROOT, QaTestCase, RecordingPolicy, model_config
 
 from ReforceXY.user_data.freqaimodels.ReforceXY import ReforceXY
 
@@ -51,7 +51,7 @@ class TrainingObservationsTest(QaTestCase):
                 )
                 for column in ("open", "high", "low", "close"):
                     frame[f"%-raw_{column}"] = 100 + np.arange(64) * 0.1
-                dk = FreqaiDataKitchen(config, live=True, pair="BTC/USDT")
+                dk = FreqaiDataKitchen(config, live=True, pair=PAIR)
                 dk.data_path = Path(temp) / "initial"
                 dk.model_filename = "cb_btc_initial"
                 dk.label_list = ["&-action"]
@@ -178,7 +178,7 @@ class TrainingObservationsTest(QaTestCase):
                 "device": "cpu",
                 "policy_kwargs": {"net_arch": [8]},
             }
-            pair = "BTC/USDT"
+            pair = PAIR
 
             def frame(day, feature_offset):
                 values = np.arange(64)
@@ -223,7 +223,7 @@ class TrainingObservationsTest(QaTestCase):
             backtest_config["runmode"] = RunMode.BACKTEST
             backtest_config["timerange"] = "20260101-20260105"
             backtest_config["config_files"] = [
-                "/workspace/ReforceXY/user_data/config-template.json"
+                str(PROJECT_ROOT / "user_data" / "config-template.json")
             ]
             backtest = ReforceXY(config=backtest_config)
             backtest.live = False
@@ -304,7 +304,7 @@ class TrainingObservationsTest(QaTestCase):
                 )
                 for column in ("open", "high", "low", "close"):
                     frame[f"%-raw_{column}"] = 100.0 + values * 0.1
-                dk = FreqaiDataKitchen(config, live=True, pair="BTC/USDT")
+                dk = FreqaiDataKitchen(config, live=True, pair=PAIR)
                 timestamp = int((frame["date"].iloc[-1] + pd.Timedelta(minutes=5)).timestamp())
                 dk.set_paths(dk.pair, timestamp)
                 dk.set_new_model_names(dk.pair, timestamp)
@@ -396,7 +396,7 @@ class TrainingObservationsTest(QaTestCase):
                     )
                     for column in ("open", "high", "low", "close"):
                         frame[f"%-raw_{column}"] = 100.0 + values * 0.1
-                    dk = FreqaiDataKitchen(config, live=True, pair="BTC/USDT")
+                    dk = FreqaiDataKitchen(config, live=True, pair=PAIR)
                     timestamp = int((frame["date"].iloc[-1] + pd.Timedelta(minutes=5)).timestamp())
                     dk.set_paths(dk.pair, timestamp)
                     dk.set_new_model_names(dk.pair, timestamp)
@@ -459,7 +459,7 @@ class TrainingObservationsTest(QaTestCase):
                     **owner.config,
                     "runmode": RunMode.BACKTEST,
                     "timerange": "20260101-20260105",
-                    "config_files": ["/workspace/ReforceXY/user_data/config-template.json"],
+                    "config_files": [str(PROJECT_ROOT / "user_data" / "config-template.json")],
                 }
                 current = FreqaiDataKitchen(current_config, live=False, pair=pair)
                 current.training_features_list = saved.training_features_list.copy()
@@ -515,7 +515,7 @@ class TrainingObservationsTest(QaTestCase):
             model = ReforceXY(config=config)
             self.addCleanup(model.close_envs)
             drawer = FreqaiDataDrawer(Path(temp), config)
-            pair = "BTC/USDT"
+            pair = PAIR
             date = pd.Timestamp("2026-01-01", tz="UTC")
             drawer.historic_predictions[pair] = pd.DataFrame(
                 {
@@ -534,7 +534,7 @@ class TrainingObservationsTest(QaTestCase):
             )
 
     def test_native_bootstrap_append_and_restart_provenance(self):
-        pair = "BTC/USDT"
+        pair = PAIR
         marker = "_freqai_strategies_produced"
         with tempfile.TemporaryDirectory() as temp:
             config = model_config(temp)
@@ -640,7 +640,7 @@ class TrainingObservationsTest(QaTestCase):
             )
 
     def test_native_schema_extension_and_restart_preserve_unknown_metadata(self):
-        pair = "BTC/USDT"
+        pair = PAIR
         marker = "_freqai_strategies_produced"
         with tempfile.TemporaryDirectory() as temp:
             config = model_config(temp)
@@ -742,7 +742,7 @@ class TrainingObservationsTest(QaTestCase):
             self.assertEqual(dk.data["labels_mean"]["&-action"], 0.0)
 
     def test_native_expiration_ignores_stale_production_and_resume_records_real_zero(self):
-        pair = "BTC/USDT"
+        pair = PAIR
         marker = "_freqai_strategies_produced"
         with tempfile.TemporaryDirectory() as temp:
             config = model_config(temp)
@@ -807,7 +807,7 @@ class TrainingObservationsTest(QaTestCase):
             self.assertEqual(dk.data["labels_mean"]["&-action"], 2.0)
 
     def test_partially_marked_history_restores_provable_observations(self):
-        pair = "BTC/USDT"
+        pair = PAIR
         marker = "_freqai_strategies_produced"
         with tempfile.TemporaryDirectory() as temp:
             config = model_config(temp)
@@ -871,7 +871,7 @@ class TrainingObservationsTest(QaTestCase):
             self.assertNotIn(marker, dk.return_dataframe)
 
     def test_duplicate_date_keeps_provable_observation_after_restart(self):
-        pair = "BTC/USDT"
+        pair = PAIR
         marker = "_freqai_strategies_produced"
         date = pd.Timestamp("2026-01-01", tz="UTC")
         for statuses, markers in (([1, 0], None), ([0, 0], [True, False])):
@@ -904,7 +904,7 @@ class TrainingObservationsTest(QaTestCase):
                 self.assertEqual(dk.data["labels_mean"]["&-action"], 7.0)
 
     def test_legacy_zero_status_is_ambiguous_but_expired_status_is_excluded(self):
-        pair = "BTC/USDT"
+        pair = PAIR
         history = pd.DataFrame(
             {
                 "date_pred": pd.date_range("2026-01-01", periods=4, freq="5min", tz="UTC"),
@@ -922,7 +922,7 @@ class TrainingObservationsTest(QaTestCase):
         self.assertEqual(dk.data["labels_mean"]["&-action"], 7.0)
 
     def test_live_action_statistics_resume_persisted_observations(self):
-        pair = "BTC/USDT"
+        pair = PAIR
         dates = pd.date_range("2026-01-01", periods=4, freq="5min", tz="UTC")
         history = pd.DataFrame(
             {
@@ -954,7 +954,7 @@ class TrainingObservationsTest(QaTestCase):
             model.frame_stacking = 2
             model.get_state_info = lambda pair: (0.5, 0.0, 0)
             policy = RecordingPolicy()
-            dk = SimpleNamespace(pair="BTC/USDT", label_list=["&-action"], data_dictionary={})
+            dk = SimpleNamespace(pair=PAIR, label_list=["&-action"], data_dictionary={})
 
             def predict(value, minute, valid=1):
                 dk.do_predict = np.array([valid])
