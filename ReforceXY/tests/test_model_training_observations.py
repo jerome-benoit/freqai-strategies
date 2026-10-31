@@ -273,6 +273,94 @@ class TrainingObservationsTest(QaTestCase):
             transformed = boundary_dk.data_dictionary["train_features"]["%-feature"]
             self.assertGreater(transformed.min(), 2.0)
 
+    def test_backtest_archive_continuation_preserves_explicit_cpu_placement(self):
+        for algorithm in ("DQN", "QRDQN"):
+            with self.subTest(algorithm=algorithm), tempfile.TemporaryDirectory() as temp:
+                config = model_config(temp)
+                info = config["freqai"]
+                info["continual_learning"] = True
+                info["data_split_parameters"]["test_size"] = 0
+                info["rl_config"]["model_type"] = algorithm
+                info["model_training_parameters"] = {
+                    "learning_starts": 0,
+                    "buffer_size": 256,
+                    "batch_size": 8,
+                    "train_freq": 4,
+                    "gradient_steps": 1,
+                    "device": "cpu",
+                    "policy_kwargs": {"net_arch": [8]},
+                }
+                owner = ReforceXY(config=config)
+                owner.live = True
+                owner.can_short = False
+                self.addCleanup(owner.close_envs)
+                values = np.arange(64)
+                frame = pd.DataFrame(
+                    {
+                        "date": pd.date_range("2026-01-01", periods=64, freq="5min", tz="UTC"),
+                        "%-feature": np.sin(values),
+                        "&-action": np.zeros(64),
+                    }
+                )
+                for column in ("open", "high", "low", "close"):
+                    frame[f"%-raw_{column}"] = 100.0 + values * 0.1
+                dk = FreqaiDataKitchen(config, live=True, pair="BTC/USDT")
+                timestamp = int((frame["date"].iloc[-1] + pd.Timedelta(minutes=5)).timestamp())
+                dk.set_paths(dk.pair, timestamp)
+                dk.set_new_model_names(dk.pair, timestamp)
+                dk.training_features_list = [column for column in frame if column.startswith("%")]
+                dk.label_list = ["&-action"]
+                trained = owner.train(frame, dk.pair, dk)
+                owner.dd.get_pair_dict_info(dk.pair)
+                owner.dd.pair_dict[dk.pair]["trained_timestamp"] = timestamp
+                owner.dd.save_data(trained, dk.pair, dk)
+
+                owner.live = False
+                current = copy.copy(dk)
+                current.live = False
+                current.data_path = Path(temp) / "continued"
+                current.data_path.mkdir()
+                restored, pipeline = owner._resolve_deployment_state(
+                    current, dk.pair, as_of_ts=timestamp + 300
+                )
+                self.assertEqual(restored.device.type, "cpu")
+                self.assertTrue(
+                    all(value.device.type == "cpu" for value in restored.policy.parameters())
+                )
+                self.assertEqual(restored.replay_buffer.device, restored.device)
+                sample = restored.replay_buffer.sample(1)
+                replay_tensors = (
+                    sample.observations,
+                    sample.actions,
+                    sample.next_observations,
+                    sample.dones,
+                    sample.rewards,
+                )
+                self.assertTrue(all(value.device.type == "cpu" for value in replay_tensors))
+                action, _ = restored.predict(sample.observations.cpu().numpy(), deterministic=True)
+                self.assertTrue(restored.action_space.contains(action[0]))
+                previous_updates = restored._n_updates
+                previous_parameters = [
+                    value.detach().cpu().numpy().copy() for value in restored.policy.parameters()
+                ]
+                owner.fit(
+                    dk.data_dictionary,
+                    current,
+                    prices_train=dk.data_dictionary["train_prices"],
+                    prices_test=dk.data_dictionary["test_prices"],
+                    deployment_state=(restored, pipeline),
+                )
+                self.assertGreater(restored._n_updates, previous_updates)
+                self.assertEqual(restored.device.type, "cpu")
+                self.assertTrue(
+                    any(
+                        not np.array_equal(before, after.detach().cpu().numpy())
+                        for before, after in zip(
+                            previous_parameters, restored.policy.parameters(), strict=True
+                        )
+                    )
+                )
+
     def test_backtest_continuation_binds_policy_pipeline_and_replay_to_the_artifact(self):
         for algorithm in ("DQN", "QRDQN"):
             with self.subTest(algorithm=algorithm), tempfile.TemporaryDirectory() as temp:

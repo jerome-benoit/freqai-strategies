@@ -1446,7 +1446,10 @@ class ReforceXY(BaseReinforcementLearningModel):
                     feature_pipeline = cloudpickle.load(fp)
             if model is None:
                 assert prefix is not None
-                model = self.MODELCLASS.load(Path(f"{prefix}_model"))
+                model = self.MODELCLASS.load(
+                    Path(f"{prefix}_model"),
+                    device=self.model_training_parameters.get("device", "auto"),
+                )
             if not isinstance(model, self.MODELCLASS):
                 raise ValueError("persisted policy type differs from the configured model")
             ReforceXY._resolve_discount_gamma({"gamma": getattr(model, "gamma", None)})
