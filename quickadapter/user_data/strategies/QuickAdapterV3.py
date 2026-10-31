@@ -16,8 +16,9 @@ from typing import (
 import numpy as np
 import pandas_ta as pta
 import talib.abstract as ta
+from BacktestIdentity import bind_backtest_implementation
 from freqtrade.constants import EntryExit, LongShort
-from freqtrade.enums import TRADE_MODES
+from freqtrade.enums import TRADE_MODES, RunMode
 from freqtrade.exchange import (
     timeframe_to_minutes,
     timeframe_to_prev_date,
@@ -266,6 +267,8 @@ class QuickAdapterV3(IStrategy):
         migrate_config(config, logger)
         normalize_fit_live_predictions_config(config, logger)
         super().__init__(config, *args, **kwargs)
+        if config.get("runmode") in (RunMode.BACKTEST, RunMode.HYPEROPT):
+            bind_backtest_implementation(self)
         if self.is_trade_runmode and self.config.get("api_server", {}).get("enabled", False):
             _install_rpc_custom_data_cleanup_patch()
 
@@ -1959,7 +1962,7 @@ class QuickAdapterV3(IStrategy):
             exit_minimum_value = (exit_minimum or 0.0) * trade.leverage
             remaining_minimum_value = (remaining_minimum or 0.0) * trade.leverage
             if not self.is_trade_runmode:
-                # Backtesting guards quote notional against its unleveraged callback minimum.
+                # Preserve the native backtest remainder guard across SDK minimum conventions.
                 remaining_minimum_value = max(remaining_minimum_value, min_stake or 0.0)
             remaining_minimum_value *= 1.0 + QuickAdapterV3._PARTIAL_EXIT_MIN_STAKE_MARGIN
             current_position_value = trade.amount * current_exit_rate

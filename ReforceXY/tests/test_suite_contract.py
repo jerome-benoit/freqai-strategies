@@ -24,7 +24,7 @@ from qa_support import (
     reseed,
 )
 
-PRODUCTION_NAMES = (PRODUCTION_MODULE, STRATEGY_MODULE)
+PRODUCTION_NAMES = (PRODUCTION_MODULE, STRATEGY_MODULE, "BacktestIdentity")
 # `ReforceXY/user_data` holds no `__init__.py`, so `ReforceXY`, `ReforceXY.user_data` and
 # `ReforceXY.user_data.freqaimodels` are PEP 420 namespace packages carrying no `__file__`
 # at all; `Path(None)` would raise instead of asserting, so every walk below filters on the
@@ -36,11 +36,9 @@ _SOURCES = tuple(sorted(MEASURED_TREE.rglob("*.py")))
 # left behind, not the state setUp already put back. It is the ONLY exemption from the
 # inheritance rule below — not its module, which is why the guard names this class.
 
-# Imported here, at module scope, so the parity contract holds on its own: unittest discovery
-# imports every test module before running any test, so a lazy import inside a method would
-# make the assertion unconditionally true. Dotted paths only — CI puts `user_data/strategies`
-# on PYTHONPATH, so a bare-stem name would register a second module object for the very file
-# this contract pins.
+# Imported at module scope so the parity contract holds on its own: unittest
+# discovery imports every test module before running any test. Model and strategy
+# keep dotted identities; BacktestIdentity uses the bare native-resolution import.
 for _name in PRODUCTION_NAMES:
     importlib.import_module(_name)
 
@@ -74,7 +72,7 @@ class SuiteContractTest(unittest.TestCase):
                     "shadow copy carrying its own module state",
                 )
 
-    def test_no_measured_file_is_registered_under_a_bare_stem(self):
+    def test_each_measured_file_uses_its_canonical_import_name(self):
         expected = {
             Path(importlib.import_module(name).__file__).resolve(): name
             for name in PRODUCTION_NAMES

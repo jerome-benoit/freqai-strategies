@@ -35,6 +35,22 @@ With `method=train_test_split`, `test_size=0` disables internal validation and
 deployment refit, not later rolling predictions. `timeseries_split` does not
 accept zero.
 
+### Backtest result caching
+
+Both strategies bind native result-cache reuse to the selected strategy/model
+implementations, inherited code, loaded local Python helpers in implementation
+directories, Python/Freqtrade versions and relevant dependency versions.
+Unchanged inputs retain native parameter handling, cache-age rules and storage
+identifiers. Existing artifacts are not deleted. Version metadata does not
+detect arbitrary same-version edits to installed dependencies. Restart the bot
+or webserver after editing local code; cache identity does not reload modules.
+
+This outer cache is separate from FreqAI models and predictions. Invalidation
+does not erase their state or reconstruct a historical environment. Native result
+identity also does not hash downloaded candle contents: use `--cache none` after
+replacing market history. Use separate identifiers and storage for cold
+comparisons as described below.
+
 ### Archived strategy charts
 
 Freqtrade 2026.10 can reanalyse the strategy source stored in a backtest ZIP
@@ -50,8 +66,9 @@ when the extracted source loads, but the current server still supplies the
 FreqAI model and runtime configuration; this does not reproduce a saved policy
 or freeze the historical environment.
 
-For ReforceXY, this native chart API lacks the pairlist context required to train
-a fresh policy. Use normal backtesting for policy training and evaluation.
+ReforceXY can resolve training fees without a pairlist provider. Archived chart
+analysis still uses current data and training settings; use normal backtesting
+for controlled policy training and evaluation.
 
 These checks run in `QuickAdapterRegressorV3` and `ReforceXY`, not in other
 FreqAI models. Reserve `ft_bt_strategy*` directories containing

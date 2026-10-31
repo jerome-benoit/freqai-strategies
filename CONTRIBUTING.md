@@ -33,8 +33,8 @@ the parsed configuration must otherwise remain unchanged. Example values are
 read from the template, not duplicated in the tests.
 
 Both coverage commands need the same explicit configuration and data path; the
-runner propagates test and coverage-report failures. QuickAdapter needs the
-strategy path for bare-name imports; it is optional for ReforceXY.
+runner propagates test and coverage-report failures. Include each strategy's
+`user_data/strategies` on `PYTHONPATH` for its standalone helper imports.
 
 For a focused debug run without coverage, use `python -m unittest discover` with
 the same suite path and an exact `module.Class.method` pattern, for example
@@ -110,8 +110,9 @@ test suite; checks assert process exit status, not workflow token spelling.
 
 Import guards require one registration per resolved production file. QuickAdapter
 strategy modules use bare names and its model uses a dotted name; ReforceXY uses
-dotted production names. Test modules use bare stems in both suites. QA config
-builders preserve explicit run modes, user directories and nested overrides;
+dotted model/strategy names and the shared standalone `BacktestIdentity` bare name.
+Test modules use bare stems in both suites. QA config builders preserve explicit
+run modes, user directories and nested overrides;
 fixtures exercising futures behavior must request futures explicitly.
 
 ## Quality checks

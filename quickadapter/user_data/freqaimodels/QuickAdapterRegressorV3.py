@@ -9,8 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import cached_property, wraps
 from hashlib import sha256
-from importlib.metadata import version as distribution_version
-from inspect import getfile, iscoroutinefunction, unwrap
+from inspect import iscoroutinefunction, unwrap
 from pathlib import Path
 from types import MethodType
 from typing import (
@@ -32,6 +31,7 @@ import pandas as pd
 import scipy as sp
 import skimage
 import sklearn
+from BacktestIdentity import implementation_fingerprint
 from datasieve.pipeline import Pipeline
 from datasieve.transforms import SKLearnWrapper
 from freqtrade.enums import TRADE_MODES, RunMode
@@ -45,7 +45,6 @@ from freqtrade.freqai.data_drawer import (
     FreqaiDataDrawer,
 )
 from freqtrade.freqai.data_kitchen import FreqaiDataKitchen
-from freqtrade.strategy.interface import IStrategy
 
 # Disabled: scikit-learn-extra 0.3.0 fails on Python 3.14 (__gxx_personality_v0).
 # from sklearn_extra.cluster import KMedoids
@@ -2328,61 +2327,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             },
             "pair": pair,
             "labels": {label: strategy.get_label_params(pair, label) for label in LABEL_COLUMNS},
-            "versions": {
-                name: distribution_version(name)
-                for name in (
-                    "freqtrade",
-                    "datasieve",
-                    "numpy",
-                    "pandas",
-                    "scipy",
-                    "scikit-learn",
-                    "optuna",
-                    "optuna-integration",
-                    "xgboost",
-                    "lightgbm",
-                    "catboost",
-                    "ngboost",
-                )
-            },
+            "implementation": implementation_fingerprint(
+                {"strategy": type(strategy), "model": type(self)}
+            ),
         }
-        sdk_classes = set(BaseRegressionModel.__mro__) | set(IStrategy.__mro__)
-        implementations = {
-            role: [cls for cls in leaf.__mro__ if cls not in sdk_classes]
-            for role, leaf in (("strategy", type(strategy)), ("model", type(self)))
-        }
-        configuration["implementations"] = {
-            role: [(cls.__module__, cls.__qualname__) for cls in classes]
-            for role, classes in implementations.items()
-        }
-        source_cache: dict[tuple[str, str | Path], bytes] = {}
-        sources: dict[tuple[str, bytes], None] = {}
-
-        def add_source(path: str | Path, snapshot: str | None = None) -> None:
-            key = ("snapshot", snapshot) if snapshot is not None else ("file", Path(path).resolve())
-            if key not in source_cache:
-                source_cache[key] = (
-                    snapshot.encode() if snapshot is not None else Path(path).read_bytes()
-                )
-            sources[(Path(path).name, source_cache[key])] = None
-
-        for classes in implementations.values():
-            leaf = classes[0]
-            for cls in classes:
-                snapshot = cls.__dict__.get("__source__")
-                path = cls.__dict__.get("__file__")
-                if snapshot is None and path is None and cls.__module__ == leaf.__module__:
-                    snapshot = leaf.__dict__.get("__source__")
-                    path = leaf.__dict__.get("__file__")
-                if snapshot is None and path is None:
-                    path = getfile(cls)
-                add_source(path or cls.__module__, snapshot)
-        for path in (Path(__file__), Path(getfile(LabelTransformer)), Path(getfile(fit_regressor))):
-            add_source(path)
         digest.update(json.dumps(configuration, sort_keys=True, default=str).encode())
-        for label, payload in sources:
-            digest.update(label.encode())
-            digest.update(payload)
         columns = [(column, str(dtype)) for column, dtype in prepared.dtypes.items()]
         digest.update(json.dumps(columns).encode())
         try:

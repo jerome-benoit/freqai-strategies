@@ -152,6 +152,10 @@ Live and dry-run restarts still restore compatible deployed models.
 
 ## Backtest cache reuse
 
+Native result-cache reuse also checks implementation and runtime versions; see
+[backtest result caching](../docs/evaluation.md#backtest-result-caching).
+The model/prediction cache below is a separate layer.
+
 Backtests store reusable models and predictions under
 `models/<identifier>/backtesting/<fingerprint>/`. Cache identity includes input
 data, effective model and strategy configuration (including settings outside
