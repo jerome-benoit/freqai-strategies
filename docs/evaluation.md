@@ -50,6 +50,9 @@ when the extracted source loads, but the current server still supplies the
 FreqAI model and runtime configuration; this does not reproduce a saved policy
 or freeze the historical environment.
 
+For ReforceXY, this native chart API lacks the pairlist context required to train
+a fresh policy. Use normal backtesting for policy training and evaluation.
+
 These checks run in `QuickAdapterRegressorV3` and `ReforceXY`, not in other
 FreqAI models. Reserve `ft_bt_strategy*` directories containing
 `<archive>_<strategy>.py` for native archive extraction; do not configure that
