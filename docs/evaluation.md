@@ -35,6 +35,55 @@ With `method=train_test_split`, `test_size=0` disables internal validation and
 deployment refit, not later rolling predictions. `timeseries_split` does not
 accept zero.
 
+### Backtest result caching
+
+Both strategies bind native result-cache reuse to the selected strategy/model
+implementations, their local ancestors, Python/Freqtrade versions and relevant
+dependency versions. Source coverage includes every `.py` file recursively below
+each local implementation's directory, including dynamically imported and unused
+files. Adding, editing, deleting or renaming any such file invalidates reuse.
+Keep implementation code in dedicated directories, separate from generated data.
+
+Installed libraries, bytecode, virtual environments and non-Python artifacts do
+not expand this source boundary. Directory symlinks are not followed; Python
+file symlinks contribute their target contents unless the target is an installed
+library. Code and resources outside these boundaries, and same-version changes
+to installed dependencies, require separate identifiers for cold comparisons.
+
+Unchanged inputs retain native parameter handling, cache-age rules and storage
+identifiers. Existing artifacts are not deleted. Restart the bot or webserver
+after editing local code; cache identity does not reload modules.
+
+This outer cache is separate from FreqAI models and predictions. Invalidation
+does not erase their state or reconstruct a historical environment. Native result
+identity also does not hash downloaded candle contents: use `--cache none` after
+replacing market history. Use separate identifiers and storage for cold
+comparisons as described below.
+
+### Archived strategy charts
+
+Freqtrade 2026.10 can reanalyse the strategy source stored in a backtest ZIP
+for charts. This is separate from running a backtest or reusing its prediction
+cache. With the supplied models, replay refuses a fallback to the current
+strategy when the archived source cannot load.
+
+QuickAdapter rejects this archived chart replay: native archives omit its local
+helper modules, and already imported current helpers are not historical copies.
+Use current-strategy charts with the intended project revision, or rerun the
+backtest from that revision. Self-contained `RLAgentStrategy` archives may replay
+when the extracted source loads, but the current server still supplies the
+FreqAI model and runtime configuration; this does not reproduce a saved policy
+or freeze the historical environment.
+
+ReforceXY can resolve training fees without a pairlist provider. Archived chart
+analysis still uses current data and training settings; use normal backtesting
+for controlled policy training and evaluation.
+
+These checks run in `QuickAdapterRegressorV3` and `ReforceXY`, not in other
+FreqAI models. Reserve `ft_bt_strategy*` directories containing
+`<archive>_<strategy>.py` for native archive extraction; do not configure that
+layout as an ordinary `strategy_path`.
+
 ## Design the comparison
 
 1. **Fix the question before inspecting results.** Specify the incumbent,

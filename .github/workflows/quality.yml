@@ -80,6 +80,7 @@ jobs:
           docker run --rm \
             --mount "type=bind,src=${GITHUB_WORKSPACE},dst=/workspace,readonly" \
             --workdir /workspace \
+            --env PYTHONPATH=/workspace/ReforceXY/user_data/strategies \
             --env FREQAI_QA_SHUFFLE_SEED=1 \
             --entrypoint python \
             "${{ matrix.image }}" \

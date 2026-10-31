@@ -9,8 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import cached_property, wraps
 from hashlib import sha256
-from importlib.metadata import version as distribution_version
-from inspect import getfile, iscoroutinefunction, unwrap
+from inspect import iscoroutinefunction, unwrap
 from pathlib import Path
 from types import MethodType
 from typing import (
@@ -32,9 +31,10 @@ import pandas as pd
 import scipy as sp
 import skimage
 import sklearn
+from BacktestIdentity import implementation_fingerprint
 from datasieve.pipeline import Pipeline
 from datasieve.transforms import SKLearnWrapper
-from freqtrade.enums import TRADE_MODES
+from freqtrade.enums import TRADE_MODES, RunMode
 from freqtrade.exceptions import DependencyException
 from freqtrade.exchange import timeframe_to_seconds
 from freqtrade.freqai.base_models.BaseRegressionModel import BaseRegressionModel
@@ -45,7 +45,6 @@ from freqtrade.freqai.data_drawer import (
     FreqaiDataDrawer,
 )
 from freqtrade.freqai.data_kitchen import FreqaiDataKitchen
-from freqtrade.strategy.interface import IStrategy
 
 # Disabled: scikit-learn-extra 0.3.0 fails on Python 3.14 (__gxx_personality_v0).
 # from sklearn_extra.cluster import KMedoids
@@ -137,6 +136,39 @@ from Utils import (
 
 _DATE_PRED_DEDUP_SENTINEL = "_freqai_strategies_date_pred_repair_patched"
 _PRODUCED_PREDICTION_COLUMN = "_freqai_strategies_produced"
+
+
+def _get_native_archive_strategy_file(config: dict[str, Any]) -> Path | None:
+    """Recognize Freqtrade 2026.10's extracted archive, not a general strategy path.
+
+    The webserver uses an ft_bt_strategy temporary directory containing one
+    <archive>_<strategy>.py file. Recheck this private SDK contract on upgrades.
+    Keep both model copies identical.
+    """
+    if config.get("runmode") != RunMode.WEBSERVER:
+        return None
+    strategy_path = config.get("strategy_path")
+    strategy_name = config.get("strategy")
+    if not strategy_path or not strategy_name:
+        return None
+    directory = Path(strategy_path)
+    if not directory.name.startswith("ft_bt_strategy"):
+        return None
+    source = next(directory.glob(f"*_{strategy_name}.py"), None)
+    return source.resolve() if source is not None else None
+
+
+def _validate_archived_strategy_source(strategy: Any) -> None:
+    """Refuse native archive replay that silently resolved the current strategy."""
+    archived = _get_native_archive_strategy_file(strategy.config)
+    if archived is None:
+        return
+    actual = getattr(strategy, "__file__", None)
+    if actual is None or Path(actual).resolve() != archived:
+        raise ValueError(
+            f"Backtest replay [{strategy.config['strategy']}]: could not load archived "
+            f"strategy {archived.name!r}; refusing current strategy fallback"
+        )
 
 
 def _legacy_produced_prediction_mask(frame: pd.DataFrame) -> NDArray[np.bool_]:
@@ -472,7 +504,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
     https://github.com/sponsors/robcaulk
     """
 
-    version = "3.13.0"
+    version = "3.13.1"
 
     _CALIBRATION_START_KEY: Final[str] = "quickadapter_calibration_start"
     _DEPLOYMENT_COORDINATE_MARKER_KEY: Final[str] = "quickadapter_deployment_coordinates"
@@ -1689,6 +1721,12 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         return copy.deepcopy(self._optuna_label_candle_pool_full_cache[cache_key])
 
     def __init__(self, config: dict[str, Any], *args, **kwargs):
+        if archived := _get_native_archive_strategy_file(config):
+            raise ValueError(
+                f"Backtest replay [{config['strategy']}]: {archived.name!r} does not preserve "
+                "QuickAdapter helper modules; archived replay is unsupported. "
+                "Use current-strategy charts with the intended project revision instead"
+            )
         migrate_config(config, logger)
         normalize_fit_live_predictions_config(config, logger)
         super().__init__(config, *args, **kwargs)
@@ -2262,6 +2300,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         drawer.__dict__["return_null_values_to_strategy"] = MethodType(null, drawer)
 
     def start(self, dataframe: pd.DataFrame, metadata: dict, strategy: Any) -> pd.DataFrame:
+        _validate_archived_strategy_source(strategy)
         result = super().start(dataframe, metadata, strategy)
         if "prediction_available" not in result:
             result = self._normalise_prediction_returns(result)
@@ -2288,61 +2327,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             },
             "pair": pair,
             "labels": {label: strategy.get_label_params(pair, label) for label in LABEL_COLUMNS},
-            "versions": {
-                name: distribution_version(name)
-                for name in (
-                    "freqtrade",
-                    "datasieve",
-                    "numpy",
-                    "pandas",
-                    "scipy",
-                    "scikit-learn",
-                    "optuna",
-                    "optuna-integration",
-                    "xgboost",
-                    "lightgbm",
-                    "catboost",
-                    "ngboost",
-                )
-            },
+            "implementation": implementation_fingerprint(
+                {"strategy": type(strategy), "model": type(self)}
+            ),
         }
-        sdk_classes = set(BaseRegressionModel.__mro__) | set(IStrategy.__mro__)
-        implementations = {
-            role: [cls for cls in leaf.__mro__ if cls not in sdk_classes]
-            for role, leaf in (("strategy", type(strategy)), ("model", type(self)))
-        }
-        configuration["implementations"] = {
-            role: [(cls.__module__, cls.__qualname__) for cls in classes]
-            for role, classes in implementations.items()
-        }
-        source_cache: dict[tuple[str, str | Path], bytes] = {}
-        sources: dict[tuple[str, bytes], None] = {}
-
-        def add_source(path: str | Path, snapshot: str | None = None) -> None:
-            key = ("snapshot", snapshot) if snapshot is not None else ("file", Path(path).resolve())
-            if key not in source_cache:
-                source_cache[key] = (
-                    snapshot.encode() if snapshot is not None else Path(path).read_bytes()
-                )
-            sources[(Path(path).name, source_cache[key])] = None
-
-        for classes in implementations.values():
-            leaf = classes[0]
-            for cls in classes:
-                snapshot = cls.__dict__.get("__source__")
-                path = cls.__dict__.get("__file__")
-                if snapshot is None and path is None and cls.__module__ == leaf.__module__:
-                    snapshot = leaf.__dict__.get("__source__")
-                    path = leaf.__dict__.get("__file__")
-                if snapshot is None and path is None:
-                    path = getfile(cls)
-                add_source(path or cls.__module__, snapshot)
-        for path in (Path(__file__), Path(getfile(LabelTransformer)), Path(getfile(fit_regressor))):
-            add_source(path)
         digest.update(json.dumps(configuration, sort_keys=True, default=str).encode())
-        for label, payload in sources:
-            digest.update(label.encode())
-            digest.update(payload)
         columns = [(column, str(dtype)) for column, dtype in prepared.dtypes.items()]
         digest.update(json.dumps(columns).encode())
         try:

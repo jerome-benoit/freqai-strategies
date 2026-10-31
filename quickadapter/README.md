@@ -152,6 +152,10 @@ Live and dry-run restarts still restore compatible deployed models.
 
 ## Backtest cache reuse
 
+Native result-cache reuse also checks implementation and runtime versions; see
+[backtest result caching](../docs/evaluation.md#backtest-result-caching).
+The model/prediction cache below is a separate layer.
+
 Backtests store reusable models and predictions under
 `models/<identifier>/backtesting/<fingerprint>/`. Cache identity includes input
 data, effective model and strategy configuration (including settings outside
@@ -175,6 +179,10 @@ fresh directory, increasing training time and disk use. Plain text can use panda
 Cached and fresh windows return the same predictions and prepared indicator
 columns. `freqai_backtest_live_models=true` is a separate Freqtrade mode: it
 replays stored live predictions without training models.
+
+Archived strategy chart replay is unsupported because native backtest archives
+omit QuickAdapter's helper modules. This does not disable normal backtesting or
+prediction-cache reuse; see [archived strategy charts](../docs/evaluation.md#archived-strategy-charts).
 
 ## Prediction warmup and restarts
 

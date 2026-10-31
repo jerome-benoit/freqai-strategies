@@ -36,7 +36,8 @@ import pandas as pd
 import rapidjson
 import torch as th
 from datasieve.pipeline import Pipeline
-from freqtrade.exceptions import DependencyException
+from freqtrade.enums import RunMode
+from freqtrade.exceptions import DependencyException, OperationalException
 from freqtrade.exchange import timeframe_to_seconds
 from freqtrade.freqai.data_drawer import (
     FEATURE_PIPELINE,
@@ -139,6 +140,39 @@ def _update_eval_best_reward(callback: Any, mean_reward: float, model: Any) -> N
 
 _DATE_PRED_DEDUP_SENTINEL = "_freqai_strategies_date_pred_repair_patched"
 _PRODUCED_COLUMN = "_freqai_strategies_produced"
+
+
+def _get_native_archive_strategy_file(config: dict[str, Any]) -> Path | None:
+    """Recognize Freqtrade 2026.10's extracted archive, not a general strategy path.
+
+    The webserver uses an ft_bt_strategy temporary directory containing one
+    <archive>_<strategy>.py file. Recheck this private SDK contract on upgrades.
+    Keep both model copies identical.
+    """
+    if config.get("runmode") != RunMode.WEBSERVER:
+        return None
+    strategy_path = config.get("strategy_path")
+    strategy_name = config.get("strategy")
+    if not strategy_path or not strategy_name:
+        return None
+    directory = Path(strategy_path)
+    if not directory.name.startswith("ft_bt_strategy"):
+        return None
+    source = next(directory.glob(f"*_{strategy_name}.py"), None)
+    return source.resolve() if source is not None else None
+
+
+def _validate_archived_strategy_source(strategy: Any) -> None:
+    """Refuse native archive replay that silently resolved the current strategy."""
+    archived = _get_native_archive_strategy_file(strategy.config)
+    if archived is None:
+        return
+    actual = getattr(strategy, "__file__", None)
+    if actual is None or Path(actual).resolve() != archived:
+        raise ValueError(
+            f"Backtest replay [{strategy.config['strategy']}]: could not load archived "
+            f"strategy {archived.name!r}; refusing current strategy fallback"
+        )
 
 
 def _legacy_produced_prediction_mask(frame: pd.DataFrame) -> NDArray[np.bool_]:
@@ -599,7 +633,7 @@ class ReforceXY(BaseReinforcementLearningModel):
     _QUARANTINE_TIE_BREAK_LIMIT: Final[int] = 99
     _BEST_PARAMS_LOCK_FILENAME: Final[str] = ".hyperopt-best-params.lock"
     # Bump on objective changes that make persisted trials or best params incompatible.
-    _OPTUNA_OBJECTIVE_IDENTITY: Final[str] = "unshaped-evaluation-temporal-costs-trained-policy-v6"
+    _OPTUNA_OBJECTIVE_IDENTITY: Final[str] = "unshaped-evaluation-temporal-costs-pair-fees-v7"
     _PPO_N_STEPS: Final[tuple[int, ...]] = (512, 1024, 2048, 4096)
     _PPO_N_STEPS_MIN: Final[int] = min(_PPO_N_STEPS)
     _PPO_N_STEPS_MAX: Final[int] = max(_PPO_N_STEPS)
@@ -682,6 +716,10 @@ class ReforceXY(BaseReinforcementLearningModel):
         self._configure_gpu_memory()
         self._install_replay_persistence()
         self._install_prediction_provenance()
+
+    def start(self, dataframe: pd.DataFrame, metadata: dict, strategy: Any) -> pd.DataFrame:
+        _validate_archived_strategy_source(strategy)
+        return super().start(dataframe, metadata, strategy)
 
     def _ensure_history_schema(self, dk: FreqaiDataKitchen, pair: str) -> None:
         """Extend restored history without inventing past observations or metadata."""
@@ -1037,7 +1075,27 @@ class ReforceXY(BaseReinforcementLearningModel):
             )
         effective_params = self.get_model_params() if model_params is None else model_params
         gamma = ReforceXY._resolve_discount_gamma(effective_params)
-        env_info = super().pack_env_dict(pair)
+        # Native packing uses the whitelist's first pair, unavailable in RPC history.
+        # Keep the SDK environment contract but resolve costs for the training pair.
+        env_info: dict[str, Any] = {
+            "window_size": self.CONV_WIDTH,
+            "reward_kwargs": self.reward_params,
+            "config": self.config,
+            "live": self.live,
+            "can_short": self.can_short,
+            "pair": pair,
+            "df_raw": self.df_raw,
+        }
+        if self.config.get("fee") is not None:
+            env_info["fee"] = self.config["fee"]
+        elif self.data_provider is not None:
+            exchange = self.data_provider._exchange
+            if exchange is None:
+                raise OperationalException(
+                    f"Env [{pair}]: resolving training fees requires an exchange "
+                    "or an explicit configured fee"
+                )
+            env_info["fee"] = exchange.get_fee(symbol=pair)
         # Each environment owns its effective parameters; do not mutate global config.
         config = copy.deepcopy(env_info["config"])
         env_info["config"] = config

@@ -9,18 +9,87 @@ from unittest import mock
 
 import numpy as np
 import pandas as pd
+from freqtrade.data.dataprovider import DataProvider
 from freqtrade.enums import RunMode
-from freqtrade.exceptions import DependencyException
+from freqtrade.exceptions import DependencyException, OperationalException
 from freqtrade.exchange import timeframe_to_seconds
 from freqtrade.freqai.data_drawer import FEATURE_PIPELINE, METADATA, FreqaiDataDrawer
 from freqtrade.freqai.data_kitchen import FreqaiDataKitchen
 from optuna import TrialPruned, create_study
 from qa_support import PAIR, PROJECT_ROOT, QaTestCase, RecordingPolicy, model_config
 
-from ReforceXY.user_data.freqaimodels.ReforceXY import ReforceXY
+from ReforceXY.user_data.freqaimodels.ReforceXY import Actions, MyRLEnv, ReforceXY
 
 
 class TrainingObservationsTest(QaTestCase):
+    def test_pairlist_free_training_costs_follow_each_pair_and_explicit_fee(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config = model_config(temp)
+            model = ReforceXY(config=config)
+            model.live = True
+            model.can_short = True
+            self.addCleanup(model.close_envs)
+            rates = {"BTC/USDT": 0.001, "ETH/USDT:USDT": 0.003}
+
+            def get_fee(*, symbol):
+                if config.get("fee") is not None:
+                    raise AssertionError("Explicit costs must not query the exchange")
+                return rates[symbol]
+
+            provider = DataProvider(
+                config, exchange=SimpleNamespace(get_fee=get_fee), pairlists=None
+            )
+            prices = pd.DataFrame({"open": [100.0] * 16})
+            for has_provider, explicit in (
+                (True, None),
+                (True, 0.0),
+                (True, 0.002),
+                (False, 0.0),
+                (False, 0.002),
+            ):
+                model.data_provider = provider if has_provider else None
+                config["fee"] = explicit
+                for pair, pair_fee in rates.items():
+                    with self.subTest(provider=has_provider, explicit=explicit, pair=pair):
+                        env = MyRLEnv(df=prices.copy(), prices=prices, **model.pack_env_dict(pair))
+                        self.addCleanup(env.close)
+                        env.reset()
+                        env.step(Actions.Long_enter.value)
+                        fee = pair_fee if explicit is None else explicit
+                        expected = 1.0 / (1.0 + fee) ** 2 - 1.0
+                        self.assertAlmostEqual(env.get_unrealized_profit(), expected)
+
+    def test_missing_exchange_requires_costs_and_preserves_exchange_errors(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config = model_config(temp)
+            model = ReforceXY(config=config)
+            model.live = True
+            model.can_short = False
+            self.addCleanup(model.close_envs)
+            model.data_provider = DataProvider(config, exchange=None, pairlists=None)
+            with self.assertRaises(OperationalException) as raised:
+                model.pack_env_dict(PAIR)
+            self.assertIn(PAIR, str(raised.exception))
+            config["fee"] = 0.0
+            prices = pd.DataFrame({"open": [100.0] * 16})
+            env = MyRLEnv(df=prices.copy(), prices=prices, **model.pack_env_dict(PAIR))
+            self.addCleanup(env.close)
+            env.reset()
+            env.step(Actions.Long_enter.value)
+            self.assertEqual(env.get_unrealized_profit(), 0.0)
+            config["fee"] = None
+            error = OperationalException("exchange cost unavailable")
+
+            def fail_fee(**kwargs):
+                raise error
+
+            model.data_provider = DataProvider(
+                config, exchange=SimpleNamespace(get_fee=fail_fee), pairlists=None
+            )
+            with self.assertRaises(OperationalException) as raised:
+                model.pack_env_dict(PAIR)
+            self.assertIs(raised.exception, error)
+
     def test_dqn_eligibility_restart_and_chronology(self):
         for algorithm in ("DQN", "QRDQN"):
             with self.subTest(algorithm=algorithm), tempfile.TemporaryDirectory() as temp:

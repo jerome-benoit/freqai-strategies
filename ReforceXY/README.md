@@ -179,6 +179,12 @@ HPO runs only when `freqai.enabled=true`,
 and remains supported for plain training, including with raw OHLC feature
 removal.
 
+Training uses the top-level `fee` when configured, including `0`. Otherwise it
+uses the exchange's maker-fee estimate for the pair being trained, not the
+whitelist's first pair. This also works with chart-history providers without a
+pairlist. A provider without an exchange requires an explicit `fee`; exchange
+errors are not replaced with a synthetic fee.
+
 `train_cycles` requests approximately training rows × cycles per HPO trial
 and final fit; environment and algorithm update boundaries round the actual
 budget. It is not an exact episode count. Trials are serialized (one Optuna
@@ -220,8 +226,9 @@ before constructing or replacing environments. Validation follows HPO overrides
 and the resumed learner's gamma, so a valid higher-priority value can supersede
 an invalid base value. A persisted learner with missing or invalid gamma cannot
 continue training. Learner and environment use the same effective discount.
-Incompatible reward-objective identities reset persisted HPO studies and cause
-stale best-parameter payloads to be ignored rather than warm-started.
+The per-pair fee correction changes the HPO objective identity. Existing studies
+reset, and saved best parameters from earlier objective identities are ignored
+rather than warm-started. Deployed policies are not deleted.
 
 ## Continual learning
 
@@ -287,6 +294,15 @@ For native backtests, set both `freqai.rl_config.add_state_info=false` and
 Use a fresh identifier after observation-shape changes. Keep chronological
 splits; training disables `shuffle_after_split`, and the native RL base
 disables row-removing SVM/DBSCAN/DI outlier removal to preserve trajectories.
+
+Native result-cache reuse checks implementation and runtime versions; see
+[backtest result caching](../docs/evaluation.md#backtest-result-caching).
+This does not reset saved policies or native FreqAI prediction caches. Keep
+separate identifiers when comparing configurations or training environments.
+
+Archived strategy charts require the extracted `RLAgentStrategy` source, not a
+fallback to the current strategy. They still use the current server's FreqAI
+model and configuration; see [archived strategy charts](../docs/evaluation.md#archived-strategy-charts).
 
 ## Configuration reference
 
