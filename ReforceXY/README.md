@@ -288,6 +288,10 @@ Use a fresh identifier after observation-shape changes. Keep chronological
 splits; training disables `shuffle_after_split`, and the native RL base
 disables row-removing SVM/DBSCAN/DI outlier removal to preserve trajectories.
 
+Archived strategy charts require the extracted `RLAgentStrategy` source, not a
+fallback to the current strategy. They still use the current server's FreqAI
+model and configuration; see [archived strategy charts](../docs/evaluation.md#archived-strategy-charts).
+
 ## Configuration reference
 
 The implementation and runtime validation are in

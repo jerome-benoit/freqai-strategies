@@ -36,6 +36,7 @@ import pandas as pd
 import rapidjson
 import torch as th
 from datasieve.pipeline import Pipeline
+from freqtrade.enums import RunMode
 from freqtrade.exceptions import DependencyException
 from freqtrade.exchange import timeframe_to_seconds
 from freqtrade.freqai.data_drawer import (
@@ -139,6 +140,39 @@ def _update_eval_best_reward(callback: Any, mean_reward: float, model: Any) -> N
 
 _DATE_PRED_DEDUP_SENTINEL = "_freqai_strategies_date_pred_repair_patched"
 _PRODUCED_COLUMN = "_freqai_strategies_produced"
+
+
+def _get_native_archive_strategy_file(config: dict[str, Any]) -> Path | None:
+    """Recognize Freqtrade 2026.10's extracted archive, not a general strategy path.
+
+    The webserver uses an ft_bt_strategy temporary directory containing one
+    <archive>_<strategy>.py file. Recheck this private SDK contract on upgrades.
+    Keep both model copies identical.
+    """
+    if config.get("runmode") != RunMode.WEBSERVER:
+        return None
+    strategy_path = config.get("strategy_path")
+    strategy_name = config.get("strategy")
+    if not strategy_path or not strategy_name:
+        return None
+    directory = Path(strategy_path)
+    if not directory.name.startswith("ft_bt_strategy"):
+        return None
+    source = next(directory.glob(f"*_{strategy_name}.py"), None)
+    return source.resolve() if source is not None else None
+
+
+def _validate_archived_strategy_source(strategy: Any) -> None:
+    """Refuse native archive replay that silently resolved the current strategy."""
+    archived = _get_native_archive_strategy_file(strategy.config)
+    if archived is None:
+        return
+    actual = getattr(strategy, "__file__", None)
+    if actual is None or Path(actual).resolve() != archived:
+        raise ValueError(
+            f"Backtest replay [{strategy.config['strategy']}]: could not load archived "
+            f"strategy {archived.name!r}; refusing current strategy fallback"
+        )
 
 
 def _legacy_produced_prediction_mask(frame: pd.DataFrame) -> NDArray[np.bool_]:
@@ -682,6 +716,10 @@ class ReforceXY(BaseReinforcementLearningModel):
         self._configure_gpu_memory()
         self._install_replay_persistence()
         self._install_prediction_provenance()
+
+    def start(self, dataframe: pd.DataFrame, metadata: dict, strategy: Any) -> pd.DataFrame:
+        _validate_archived_strategy_source(strategy)
+        return super().start(dataframe, metadata, strategy)
 
     def _ensure_history_schema(self, dk: FreqaiDataKitchen, pair: str) -> None:
         """Extend restored history without inventing past observations or metadata."""

@@ -176,6 +176,10 @@ Cached and fresh windows return the same predictions and prepared indicator
 columns. `freqai_backtest_live_models=true` is a separate Freqtrade mode: it
 replays stored live predictions without training models.
 
+Archived strategy chart replay is unsupported because native backtest archives
+omit QuickAdapter's helper modules. This does not disable normal backtesting or
+prediction-cache reuse; see [archived strategy charts](../docs/evaluation.md#archived-strategy-charts).
+
 ## Prediction warmup and restarts
 
 ### When thresholds become available

@@ -34,7 +34,7 @@ import skimage
 import sklearn
 from datasieve.pipeline import Pipeline
 from datasieve.transforms import SKLearnWrapper
-from freqtrade.enums import TRADE_MODES
+from freqtrade.enums import TRADE_MODES, RunMode
 from freqtrade.exceptions import DependencyException
 from freqtrade.exchange import timeframe_to_seconds
 from freqtrade.freqai.base_models.BaseRegressionModel import BaseRegressionModel
@@ -137,6 +137,39 @@ from Utils import (
 
 _DATE_PRED_DEDUP_SENTINEL = "_freqai_strategies_date_pred_repair_patched"
 _PRODUCED_PREDICTION_COLUMN = "_freqai_strategies_produced"
+
+
+def _get_native_archive_strategy_file(config: dict[str, Any]) -> Path | None:
+    """Recognize Freqtrade 2026.10's extracted archive, not a general strategy path.
+
+    The webserver uses an ft_bt_strategy temporary directory containing one
+    <archive>_<strategy>.py file. Recheck this private SDK contract on upgrades.
+    Keep both model copies identical.
+    """
+    if config.get("runmode") != RunMode.WEBSERVER:
+        return None
+    strategy_path = config.get("strategy_path")
+    strategy_name = config.get("strategy")
+    if not strategy_path or not strategy_name:
+        return None
+    directory = Path(strategy_path)
+    if not directory.name.startswith("ft_bt_strategy"):
+        return None
+    source = next(directory.glob(f"*_{strategy_name}.py"), None)
+    return source.resolve() if source is not None else None
+
+
+def _validate_archived_strategy_source(strategy: Any) -> None:
+    """Refuse native archive replay that silently resolved the current strategy."""
+    archived = _get_native_archive_strategy_file(strategy.config)
+    if archived is None:
+        return
+    actual = getattr(strategy, "__file__", None)
+    if actual is None or Path(actual).resolve() != archived:
+        raise ValueError(
+            f"Backtest replay [{strategy.config['strategy']}]: could not load archived "
+            f"strategy {archived.name!r}; refusing current strategy fallback"
+        )
 
 
 def _legacy_produced_prediction_mask(frame: pd.DataFrame) -> NDArray[np.bool_]:
@@ -1689,6 +1722,12 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         return copy.deepcopy(self._optuna_label_candle_pool_full_cache[cache_key])
 
     def __init__(self, config: dict[str, Any], *args, **kwargs):
+        if archived := _get_native_archive_strategy_file(config):
+            raise ValueError(
+                f"Backtest replay [{config['strategy']}]: {archived.name!r} does not preserve "
+                "QuickAdapter helper modules; archived replay is unsupported. "
+                "Use current-strategy charts with the intended project revision instead"
+            )
         migrate_config(config, logger)
         normalize_fit_live_predictions_config(config, logger)
         super().__init__(config, *args, **kwargs)
@@ -2262,6 +2301,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         drawer.__dict__["return_null_values_to_strategy"] = MethodType(null, drawer)
 
     def start(self, dataframe: pd.DataFrame, metadata: dict, strategy: Any) -> pd.DataFrame:
+        _validate_archived_strategy_source(strategy)
         result = super().start(dataframe, metadata, strategy)
         if "prediction_available" not in result:
             result = self._normalise_prediction_returns(result)
