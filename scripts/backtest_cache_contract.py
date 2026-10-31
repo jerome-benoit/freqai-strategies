@@ -13,6 +13,7 @@ from typing import Any
 from unittest import mock
 
 import freqtrade
+from BacktestIdentity import implementation_fingerprint
 from freqtrade.configuration import TimeRange
 from freqtrade.enums import RunMode
 from freqtrade.optimize.backtest_caching import get_strategy_run_id
@@ -103,7 +104,6 @@ def assert_native_implementation_cache(
         snapshot = deepcopy(nested)
         config["api_server"] = {"enabled": False, "username": "unrelated-cache-setting"}
         config["telegram"] = {"enabled": False}
-        (implementations / "unrelated.py").write_text("UNUSED = 123\n")
         test.assertEqual(cached(load())[strategy_name]["profit_total"], 0.125)
         test.assertIs(config["freqai"], nested)
         test.assertEqual(nested, snapshot)
@@ -111,12 +111,19 @@ def assert_native_implementation_cache(
             test.assertNotIn(strategy_name, cached(load()))
         test.assertEqual(cached(load())[strategy_name]["profit_total"], 0.125)
 
-        def upgraded_dependency(name):
-            return "999.0+cache-test" if name == "torch" else distribution_version(name)
+        for dependency in ("torch", "ft-pandas-ta"):
+            with test.subTest(dependency=dependency):
 
-        with mock.patch("BacktestIdentity.version", side_effect=upgraded_dependency):
-            test.assertNotIn(strategy_name, cached(load()))
-        test.assertEqual(cached(load())[strategy_name]["profit_total"], 0.125)
+                def upgraded_dependency(name, selected_dependency=dependency):
+                    return (
+                        "999.0+cache-test"
+                        if name == selected_dependency
+                        else distribution_version(name)
+                    )
+
+                with mock.patch("BacktestIdentity.version", side_effect=upgraded_dependency):
+                    test.assertNotIn(strategy_name, cached(load()))
+                test.assertEqual(cached(load())[strategy_name]["profit_total"], 0.125)
         helper.write_text("VALUE = -1\ndef coefficient():\n    return VALUE\n")
         importlib.invalidate_caches()
         test.assertNotIn(strategy_name, cached(load()))
@@ -179,6 +186,122 @@ def assert_native_implementation_cache(
             "VALUE = 0.5\n@lru_cache(None)\ndef coefficient():\n    return VALUE\n"
         )
         test.assertNotIn(strategy_name, cached(load()))
+        for imports, ancestor in (
+            ("from sklearn.base import BaseEstimator", "BaseEstimator"),
+            ("from typing import Generic, TypeVar\nT = TypeVar('T')", "Generic[T]"),
+        ):
+            with test.subTest(external_ancestor=ancestor):
+                model_path.write_text(
+                    f"{model_import}\n{imports}\n"
+                    f"class CacheModel(CacheBase, {ancestor}):\n"
+                    "    def __init__(self, *args, **kwargs):\n"
+                    "        raise AssertionError('Identity must not construct a model')\n"
+                )
+                store(load())
+                test.assertEqual(cached(load())[strategy_name]["profit_total"], 0.125)
+        with test.subTest(helper_import="dynamic", leaf_methods=False):
+            helper.write_text("VALUE = 1\n")
+            sys.modules.pop(helper_name, None)
+            model_path.write_text(
+                "import importlib\n"
+                f"from {base_name} import CacheParent\n"
+                f"settings = importlib.import_module({helper_name!r})\n"
+                "class CacheModel(CacheParent):\n"
+                "    cache_scale = settings.VALUE\n"
+            )
+            store(load())
+            test.assertEqual(cached(load())[strategy_name]["profit_total"], 0.125)
+            helper.write_text("VALUE = 2\n")
+            sys.modules.pop(helper_name, None)
+            importlib.invalidate_caches()
+            test.assertNotIn(strategy_name, cached(load()))
+        with test.subTest(source_boundary="conservative"):
+            store(load())
+            extra = implementations / "extra.py"
+            extra.write_text("unused Python need not parse!\n")
+            test.assertNotIn(strategy_name, cached(load()))
+            store(load())
+            extra.write_text("UNUSED = 42\n")
+            test.assertNotIn(strategy_name, cached(load()))
+            store(load())
+            renamed = implementations / "renamed.py"
+            extra.rename(renamed)
+            test.assertNotIn(strategy_name, cached(load()))
+            renamed.unlink()
+            marker = implementations / "marker.py"
+            marker.write_text("UNUSED_MARKER = True\n")
+            extra.write_text("UNUSED = 42\n")
+            store(load())
+            extra.unlink()
+            test.assertNotIn(strategy_name, cached(load()))
+            marker.unlink()
+            store(load())
+            (implementations / "model.joblib").write_bytes(b"generated model")
+            (implementations / "metadata.json").write_text('{"generated": true}\n')
+            test.assertEqual(cached(load())[strategy_name]["profit_total"], 0.125)
+
+
+def assert_source_tree_provenance(test: Any, directory: Path) -> None:
+    """Source location, aliases and resolver snapshots must not corrupt cache identity."""
+    source = "class Selected:\n    pass\n"
+    implementations = []
+    for name in ("first", "relocated"):
+        root = directory / name
+        root.mkdir()
+        path = root / "selected.py"
+        path.write_text(source)
+        implementations.append(
+            type(
+                "Selected",
+                (),
+                {"__module__": "_cache_provenance", "__file__": str(path), "__source__": source},
+            )
+        )
+    selected, relocated = implementations
+    fingerprint = implementation_fingerprint({"model": selected})
+    test.assertEqual(fingerprint, implementation_fingerprint({"model": relocated}))
+    root = Path(selected.__file__).parent
+    path = root / "selected.py"
+    path.write_text("class Selected:\n    changed_on_disk = True\n")
+    test.assertEqual(fingerprint, implementation_fingerprint({"model": selected}))
+    path.unlink()
+    test.assertEqual(fingerprint, implementation_fingerprint({"model": selected}))
+    path.write_text(source)
+    changed = type(
+        "Selected",
+        (),
+        {
+            "__module__": "_cache_provenance",
+            "__file__": str(path),
+            "__source__": source.replace("pass", "changed_snapshot = True"),
+        },
+    )
+    ordered = implementation_fingerprint({"model": selected, "strategy": changed})
+    test.assertEqual(ordered, implementation_fingerprint({"strategy": changed, "model": selected}))
+    test.assertNotEqual(
+        ordered, implementation_fingerprint({"model": changed, "strategy": selected})
+    )
+    packages = [root / name for name in ("one", "two")]
+    for package, value in zip(packages, (1, 2), strict=True):
+        package.mkdir()
+        (package / "settings.py").write_text(f"VALUE = {value}\n")
+    before_swap = implementation_fingerprint({"model": selected})
+    for package, value in zip(packages, (2, 1), strict=True):
+        (package / "settings.py").write_text(f"VALUE = {value}\n")
+    test.assertNotEqual(before_swap, implementation_fingerprint({"model": selected}))
+    external = directory / "external"
+    external.mkdir()
+    helper = external / "helper.py"
+    helper.write_text("VALUE = 1\n")
+    (root / "linked.py").symlink_to(helper)
+    (root / "cycle").symlink_to(root, target_is_directory=True)
+    (root / "outside").symlink_to(external, target_is_directory=True)
+    before_link_change = implementation_fingerprint({"model": selected})
+    helper.write_text("VALUE = 2\n")
+    after_link_change = implementation_fingerprint({"model": selected})
+    test.assertNotEqual(before_link_change, after_link_change)
+    (external / "unrelated.py").write_text("VALUE = 3\n")
+    test.assertEqual(after_link_change, implementation_fingerprint({"model": selected}))
 
 
 def assert_native_startup_predictions(

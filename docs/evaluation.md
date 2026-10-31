@@ -38,12 +38,21 @@ accept zero.
 ### Backtest result caching
 
 Both strategies bind native result-cache reuse to the selected strategy/model
-implementations, inherited code, loaded local Python helpers in implementation
-directories, Python/Freqtrade versions and relevant dependency versions.
+implementations, their local ancestors, Python/Freqtrade versions and relevant
+dependency versions. Source coverage includes every `.py` file recursively below
+each local implementation's directory, including dynamically imported and unused
+files. Adding, editing, deleting or renaming any such file invalidates reuse.
+Keep implementation code in dedicated directories, separate from generated data.
+
+Installed libraries, bytecode, virtual environments and non-Python artifacts do
+not expand this source boundary. Directory symlinks are not followed; Python
+file symlinks contribute their target contents unless the target is an installed
+library. Code and resources outside these boundaries, and same-version changes
+to installed dependencies, require separate identifiers for cold comparisons.
+
 Unchanged inputs retain native parameter handling, cache-age rules and storage
-identifiers. Existing artifacts are not deleted. Version metadata does not
-detect arbitrary same-version edits to installed dependencies. Restart the bot
-or webserver after editing local code; cache identity does not reload modules.
+identifiers. Existing artifacts are not deleted. Restart the bot or webserver
+after editing local code; cache identity does not reload modules.
 
 This outer cache is separate from FreqAI models and predictions. Invalidation
 does not erase their state or reconstruct a historical environment. Native result

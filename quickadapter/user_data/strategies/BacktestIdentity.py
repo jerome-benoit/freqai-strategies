@@ -4,17 +4,17 @@ Keep both standalone strategy copies identical. Native resolver search and class
 source metadata are private SDK contracts; recheck them on Freqtrade upgrades.
 """
 
-import ast
 import json
+import os
 import platform
+import site
 import sys
+import sysconfig
 from collections.abc import Iterator, Mapping
 from hashlib import sha256
 from importlib.metadata import PackageNotFoundError, version
-from importlib.util import resolve_name
-from inspect import getfile, isfunction, unwrap
+from inspect import getfile
 from pathlib import Path
-from types import ModuleType
 from typing import Any, Final
 
 import freqtrade
@@ -41,136 +41,125 @@ _COMMON_DEPENDENCIES: Final = (
     "cloudpickle",
     "TA-Lib",
     "technical",
-    "pandas-ta",
+    "ft-pandas-ta",
 )
 _REGRESSION_DEPENDENCIES: Final = ("xgboost", "lightgbm", "catboost", "ngboost", "scikit-image")
 _RL_DEPENDENCIES: Final = ("gymnasium", "stable-baselines3", "sb3-contrib")
 
 
-def _import_namespaces(source: bytes, package: str) -> Iterator[dict[str, Any]]:
-    """Find loaded imports even when a native-resolved leaf owns no methods."""
-    for node in ast.walk(ast.parse(source)):
-        if isinstance(node, ast.Import):
-            names = [alias.name for alias in node.names]
-        elif isinstance(node, ast.ImportFrom):
-            name = node.module or ""
-            if node.level:
-                if not package:
-                    continue
-                try:
-                    name = resolve_name("." * node.level + name, package)
-                except ImportError:
-                    continue
-            names = [name, *(f"{name}.{alias.name}" for alias in node.names)]
-        else:
-            continue
-        for name in names:
-            module = sys.modules.get(name)
-            if module is not None:
-                yield vars(module)
+def _installed_roots() -> set[Path]:
+    """Locate interpreter libraries without excluding sibling project directories."""
+    paths = sysconfig.get_paths()
+    roots = {
+        Path(value).resolve()
+        for key in ("stdlib", "platstdlib", "purelib", "platlib")
+        if (value := paths.get(key))
+    }
+    roots.update(
+        Path(path).resolve() for path in site.getsitepackages([sys.prefix, sys.base_prefix])
+    )
+    roots.add(Path(site.getusersitepackages()).resolve())
+    roots.add(Path(freqtrade.__file__).resolve().parent)
+    return roots
 
 
-def _class_namespaces(cls: type) -> Iterator[dict[str, Any]]:
-    """Use actual function globals: native-resolved modules may be unregistered."""
-    for member in vars(cls).values():
-        if isinstance(member, (staticmethod, classmethod)):
-            member = member.__func__
-        elif isinstance(member, property):
-            member = member.fget
-        if callable(member):
-            member = unwrap(member)
-        if isfunction(member):
-            yield member.__globals__
-    module = sys.modules.get(cls.__module__)
-    # Data-only imported classes have no function globals. Reject name collisions.
-    if module is not None and vars(module).get(cls.__name__) is cls:
-        yield vars(module)
+def _python_sources(root: Path, excluded: set[Path]) -> Iterator[Path]:
+    """Walk source files only; directory links cannot expand or cycle the boundary."""
+
+    def fail(error: OSError) -> None:
+        raise error
+
+    for directory, children, files in os.walk(root, onerror=fail):
+        parent = Path(directory)
+        children[:] = [
+            name
+            for name in children
+            if name not in ("__pycache__", ".git")
+            and not (child := parent / name).is_symlink()
+            and not (child / "pyvenv.cfg").is_file()
+            and not any(child.resolve().is_relative_to(path) for path in excluded)
+        ]
+        for name in files:
+            path = parent / name
+            if (
+                path.suffix == ".py"
+                and not any(path.resolve().is_relative_to(directory) for directory in excluded)
+                and path.is_file()
+            ):
+                yield path
 
 
 def implementation_fingerprint(implementations: Mapping[str, type]) -> str:
-    """Hash selected classes, reachable local helpers and release dependencies.
+    """Hash selected classes, bounded local Python trees and release dependencies.
 
-    Paths locate sources but are not part of identity. Resolver snapshots take
-    precedence over disk source. Local helper traversal stays inside directories
-    containing selected non-SDK MRO implementations; it never scans user data or
-    installed packages. Version metadata does not detect same-version SDK/binary
-    modifications. File hashes are not memoized across strategy constructions.
+    Every Python file inside local implementation/MRO directories contributes,
+    including unused or dynamically imported helpers. Installed libraries never
+    create scan roots. Resolver snapshots override disk source, even through
+    file aliases. Absolute paths locate files but are not part of the identity.
     """
     classes = {role: list(leaf.__mro__[:-1]) for role, leaf in implementations.items()}
-    local_classes = [
-        cls
-        for lineage in classes.values()
-        for cls in lineage
-        if cls.__module__ != "abc" and not cls.__module__.startswith("freqtrade.")
-    ]
-    sources: dict[tuple[str, bytes], None] = {}
-    source_cache: dict[tuple[str, str | Path], bytes] = {}
-    snapshots: dict[Path, str] = {}
-    imports: dict[tuple[bytes, str], tuple[dict[str, Any], ...]] = {}
-    directories: set[Path] = set()
-    namespaces: list[dict[str, Any]] = []
-
-    def add_source(path: str | Path, snapshot: str | None = None) -> bytes:
-        key = ("snapshot", snapshot) if snapshot is not None else ("file", Path(path).resolve())
-        if key not in source_cache:
-            source_cache[key] = (
-                snapshot.encode() if snapshot is not None else Path(path).read_bytes()
-            )
-        sources[(Path(path).name, source_cache[key])] = None
-        return source_cache[key]
-
-    def imported_namespaces(payload: bytes, package: str) -> tuple[dict[str, Any], ...]:
-        key = (payload, package)
-        if key not in imports:
-            imports[key] = tuple(_import_namespaces(payload, package))
-        return imports[key]
-
-    for lineage in classes.values():
+    excluded = _installed_roots()
+    snapshots: dict[Path, set[bytes]] = {}
+    class_sources: dict[tuple[str, int], tuple[Path, bytes | None]] = {}
+    roots: dict[Path, list[tuple[str, int, str, str]]] = {}
+    for role, lineage in classes.items():
         leaf = lineage[0]
-        for cls in lineage:
-            if cls not in local_classes:
+        for index, cls in enumerate(lineage):
+            if cls.__module__ in ("abc", "builtins") or cls.__module__.startswith("freqtrade."):
                 continue
             snapshot = cls.__dict__.get("__source__")
-            path = cls.__dict__.get("__file__")
-            if snapshot is None and path is None and cls.__module__ == leaf.__module__:
+            filename = cls.__dict__.get("__file__")
+            if snapshot is None and filename is None and cls.__module__ == leaf.__module__:
                 snapshot = leaf.__dict__.get("__source__")
-                path = leaf.__dict__.get("__file__")
-            if snapshot is None and path is None:
-                path = getfile(cls)
-            payload = add_source(path or cls.__module__, snapshot)
-            if path is not None:
-                resolved = Path(path).resolve()
-                directories.add(resolved.parent)
-                if snapshot is not None:
-                    snapshots[resolved] = snapshot
-            namespaces.extend(_class_namespaces(cls))
-            namespaces.extend(imported_namespaces(payload, cls.__module__.rpartition(".")[0]))
+                filename = leaf.__dict__.get("__file__")
+            if filename is None:
+                try:
+                    filename = getfile(cls)
+                except TypeError as error:
+                    if cls.__module__ in sys.builtin_module_names:
+                        continue
+                    raise OperationalException(
+                        f"Backtest cache: cannot locate Python source for {cls.__qualname__}"
+                    ) from error
+            path = Path(filename).resolve()
+            if any(path.is_relative_to(directory) for directory in excluded):
+                continue
+            if path.suffix != ".py":
+                raise OperationalException(
+                    f"Backtest cache: Python source is required for {cls.__qualname__}"
+                )
+            payload = snapshot.encode() if snapshot is not None else None
+            class_sources[(role, index)] = (path, payload)
+            roots.setdefault(path.parent, []).append(
+                (role, index, cls.__module__, cls.__qualname__)
+            )
+            if payload is not None:
+                snapshots.setdefault(path, set()).add(payload)
 
-    visited: set[int] = set()
-    while namespaces:
-        namespace = namespaces.pop()
-        if id(namespace) in visited:
-            continue
-        visited.add(id(namespace))
-        filename = namespace.get("__file__")
-        if filename is None:
-            continue
-        path = Path(filename).resolve()
-        if not any(path.is_relative_to(directory) for directory in directories):
-            continue
-        payload = add_source(path, snapshots.get(path))
-        namespaces.extend(imported_namespaces(payload, namespace.get("__package__") or ""))
-        for value in tuple(namespace.values()):
-            if callable(value):
-                value = unwrap(value)
-            if isfunction(value):
-                namespaces.append(value.__globals__)
-            elif isinstance(value, ModuleType):
-                namespaces.append(vars(value))
-            elif isinstance(value, type):
-                namespaces.extend(_class_namespaces(value))
+    source_cache: dict[Path, tuple[bytes, ...]] = {}
+    sources: set[tuple[str, bytes]] = set()
 
-    add_source(__file__)
+    def payloads(path: Path) -> tuple[bytes, ...]:
+        path = path.resolve()
+        if path not in source_cache:
+            source_cache[path] = (
+                tuple(sorted(snapshots[path])) if path in snapshots else (path.read_bytes(),)
+            )
+        return source_cache[path]
+
+    for (role, index), (path, snapshot) in class_sources.items():
+        label = json.dumps(("class", role, index))
+        for payload in (snapshot,) if snapshot is not None else payloads(path):
+            sources.add((label, payload))
+    for root, anchors in roots.items():
+        anchor = min(anchors)
+        paths = set(_python_sources(root, excluded))
+        paths.update(path for path in snapshots if path.is_relative_to(root))
+        for path in paths:
+            label = json.dumps(("tree", anchor, path.relative_to(root).as_posix()))
+            for payload in payloads(path):
+                sources.add((label, payload))
+    sources.add(("identity-helper", Path(__file__).read_bytes()))
     rl = any(
         cls.__module__.startswith("freqtrade.freqai.RL.")
         for lineage in classes.values()

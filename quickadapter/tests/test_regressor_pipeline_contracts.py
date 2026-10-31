@@ -1024,6 +1024,58 @@ class BacktestContractsTest(QaTestCase):
                 )
             )
 
+    def test_dynamic_model_helper_isolates_prediction_cache(self):
+        with temporary_directory() as directory:
+            implementations = directory / "implementations"
+            implementations.mkdir()
+            helper_name = f"_qa_dynamic_settings_{directory.name.replace('-', '_')}"
+            parent_name = helper_name + "_parent"
+            self.addCleanup(sys.modules.pop, helper_name, None)
+            self.addCleanup(sys.modules.pop, parent_name, None)
+            helper = implementations / f"{helper_name}.py"
+            helper.write_text("SCALE = 1.0\n")
+            (implementations / f"{parent_name}.py").write_text(
+                "from quickadapter.user_data.freqaimodels.QuickAdapterRegressorV3 import QuickAdapterRegressorV3\n"
+                "class DynamicBaseRegressor(QuickAdapterRegressorV3):\n"
+                "    def predict(self, unfiltered_df, dk, **kwargs):\n"
+                "        result, status = super().predict(unfiltered_df, dk, **kwargs)\n"
+                "        result['&s-extrema'] *= self.prediction_scale\n"
+                "        return result, status\n"
+            )
+            (implementations / "dynamic_regressor.py").write_text(
+                "import importlib\n"
+                f"from {parent_name} import DynamicBaseRegressor\n"
+                f"settings = importlib.import_module({helper_name!r})\n"
+                "class DynamicRegressor(DynamicBaseRegressor):\n"
+                "    prediction_scale = settings.SCALE\n"
+            )
+            frame = ohlcv_frame(100.0 + np.sin(np.arange(720) / 9.0) * 4.0)
+            options = {"model_name": "DynamicRegressor", "model_path": implementations}
+            first = self._run_backtest(directory / "shared", frame, **options)
+            unchanged = self._run_backtest(directory / "shared", frame, **options)
+            self.assertEqual(first.data_path.parent, unchanged.data_path.parent)
+            pd.testing.assert_frame_equal(first.return_dataframe, unchanged.return_dataframe)
+            helper.write_text("SCALE = -1.0\n")
+            sys.modules.pop(helper_name)
+            importlib.invalidate_caches()
+            changed = self._run_backtest(directory / "shared", frame, **options)
+            fresh = self._run_backtest(directory / "fresh", frame, **options)
+            repeated = self._run_backtest(directory / "shared", frame, **options)
+            self.assertNotEqual(first.data_path.parent, changed.data_path.parent)
+            self.assertEqual(changed.data_path.parent, repeated.data_path.parent)
+            pd.testing.assert_frame_equal(changed.return_dataframe, fresh.return_dataframe)
+            pd.testing.assert_frame_equal(repeated.return_dataframe, fresh.return_dataframe)
+            np.testing.assert_allclose(
+                changed.return_dataframe[LABEL], -first.return_dataframe[LABEL], equal_nan=True
+            )
+            self.assertFalse(
+                np.allclose(
+                    changed.return_dataframe[LABEL],
+                    first.return_dataframe[LABEL],
+                    equal_nan=True,
+                )
+            )
+
     def test_shifted_cache_is_recomputed_and_changed_inputs_isolate_models(self):
         with temporary_directory() as directory:
             position = np.arange(720)
