@@ -2516,11 +2516,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
 
         @wraps(load)
         def loaded(drawer: FreqaiDataDrawer, coin: str, kitchen: FreqaiDataKitchen) -> Any:
-            # A backtest window must not inherit another window's cached metadata.
-            if not kitchen.live:
-                drawer.meta_data_dictionary.pop(coin, None)
-                drawer.model_dictionary.pop(coin, None)
-            model = load(coin, kitchen)
+            model = (
+                load(coin, kitchen)
+                if kitchen.live
+                else self._load_deployment_artifact(drawer, coin, kitchen)
+            )
             if model is not None and not kitchen.live:
                 drawer.model_dictionary[coin] = model
                 drawer.meta_data_dictionary[coin] = {
@@ -2988,6 +2988,17 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             label_weighting_config=label_weighting_config,
         )
 
+    @staticmethod
+    def _load_deployment_artifact(
+        drawer: FreqaiDataDrawer, pair: str, dk: FreqaiDataKitchen
+    ) -> Any:
+        """Load native artifact files without consulting or evicting shared caches."""
+        artifact_drawer = copy.copy(drawer)
+        artifact_drawer.model_dictionary = {}
+        artifact_drawer.meta_data_dictionary = {}
+        # Instance hooks can close over the original drawer and its mutable caches.
+        return FreqaiDataDrawer.load_data(artifact_drawer, pair, dk)
+
     def _resolve_deployment_state(
         self, dk: FreqaiDataKitchen, pair: str, *, as_of_ts: int | None = None
     ) -> tuple[Any, Pipeline, Pipeline] | None:
@@ -3014,7 +3025,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         else:
             return None
 
-        model = self.dd.model_dictionary.get(pair)
+        model = self.dd.model_dictionary.get(pair) if self.live else None
         previous = self.dd.pair_dict.get(pair, {})
         if (
             not self.live
@@ -3038,7 +3049,7 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
             ):
                 return None
         try:
-            cached = self.dd.meta_data_dictionary.get(pair)
+            cached = self.dd.meta_data_dictionary.get(pair) if self.live else None
             if model is not None and cached is not None:
                 metadata = cached[METADATA]
                 feature_pipeline = cached[FEATURE_PIPELINE]
@@ -3048,7 +3059,11 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
                 previous_dk = copy.copy(dk)
                 previous_dk.data_path = Path(previous["data_path"])
                 previous_dk.model_filename = previous["model_filename"]
-                model = self.dd.load_data(pair, previous_dk)
+                if self.live:
+                    model = self.dd.load_data(pair, previous_dk)
+                else:
+                    previous_dk.live = False
+                    model = self._load_deployment_artifact(self.dd, pair, previous_dk)
                 metadata = previous_dk.data
                 feature_pipeline = previous_dk.feature_pipeline
                 label_pipeline = previous_dk.label_pipeline

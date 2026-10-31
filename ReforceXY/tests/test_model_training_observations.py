@@ -1,5 +1,6 @@
 """Regression contracts for learning eligibility, replay and temporal observations."""
 
+import copy
 import json
 import tempfile
 from pathlib import Path
@@ -11,7 +12,7 @@ import pandas as pd
 from freqtrade.enums import RunMode
 from freqtrade.exceptions import DependencyException
 from freqtrade.exchange import timeframe_to_seconds
-from freqtrade.freqai.data_drawer import METADATA, FreqaiDataDrawer
+from freqtrade.freqai.data_drawer import FEATURE_PIPELINE, METADATA, FreqaiDataDrawer
 from freqtrade.freqai.data_kitchen import FreqaiDataKitchen
 from optuna import TrialPruned, create_study
 from qa_support import QaTestCase, RecordingPolicy, model_config
@@ -271,6 +272,154 @@ class TrainingObservationsTest(QaTestCase):
             seconds.train(boundary, pair, boundary_dk)
             transformed = boundary_dk.data_dictionary["train_features"]["%-feature"]
             self.assertGreater(transformed.min(), 2.0)
+
+    def test_backtest_continuation_binds_policy_pipeline_and_replay_to_the_artifact(self):
+        for algorithm in ("DQN", "QRDQN"):
+            with self.subTest(algorithm=algorithm), tempfile.TemporaryDirectory() as temp:
+
+                def deployment(algorithm, day, offset, seed, gamma, reward):
+                    config = model_config(temp)
+                    info = config["freqai"]
+                    info["identifier"] = f"artifact-{algorithm}-{seed}"
+                    info["continual_learning"] = True
+                    info["rl_config"]["model_type"] = algorithm
+                    info["model_training_parameters"] = {
+                        "learning_starts": 0,
+                        "buffer_size": 128,
+                        "batch_size": 8,
+                        "train_freq": 4,
+                        "gradient_steps": 1,
+                        "device": "cpu",
+                        "seed": seed,
+                        "gamma": gamma,
+                        "policy_kwargs": {"net_arch": [8]},
+                    }
+                    owner = ReforceXY(config=config)
+                    owner.live = True
+                    owner.can_short = False
+                    self.addCleanup(owner.close_envs)
+                    values = np.arange(64)
+                    frame = pd.DataFrame(
+                        {
+                            "date": pd.date_range(day, periods=64, freq="5min", tz="UTC"),
+                            "%-feature": np.sin(values) + offset,
+                            "&-action": np.zeros(64),
+                        }
+                    )
+                    for column in ("open", "high", "low", "close"):
+                        frame[f"%-raw_{column}"] = 100.0 + values * 0.1
+                    dk = FreqaiDataKitchen(config, live=True, pair="BTC/USDT")
+                    timestamp = int((frame["date"].iloc[-1] + pd.Timedelta(minutes=5)).timestamp())
+                    dk.set_paths(dk.pair, timestamp)
+                    dk.set_new_model_names(dk.pair, timestamp)
+                    dk.label_list = ["&-action"]
+                    dk.training_features_list = [c for c in frame if c.startswith("%")]
+                    model = owner.train(frame, dk.pair, dk)
+                    observation = np.full(
+                        (model.n_envs, *model.observation_space.shape),
+                        0.125,
+                        dtype=np.float32,
+                    )
+                    model.replay_buffer.add(
+                        observation,
+                        observation + 0.125,
+                        np.zeros((model.n_envs, 1), dtype=np.int64),
+                        np.full(model.n_envs, reward),
+                        np.zeros(model.n_envs, dtype=bool),
+                        [{} for _ in range(model.n_envs)],
+                    )
+                    owner.dd.get_pair_dict_info(dk.pair)
+                    owner.dd.pair_dict[dk.pair]["trained_timestamp"] = timestamp
+                    owner.dd.save_data(model, dk.pair, dk)
+                    return owner, dk, model, frame
+
+                owner, saved, model, frame = deployment(
+                    algorithm, "2026-01-01", 0.0, 42, 0.95, 17.0
+                )
+                future, future_dk, future_model, _ = deployment(
+                    algorithm, "2026-02-01", 1000.0, 43, 0.8, 29.0
+                )
+                pair = saved.pair
+                saved_cache = owner.dd.meta_data_dictionary[pair]
+                future_cache = future.dd.meta_data_dictionary[pair]
+                probe = frame[saved.training_features_list]
+                expected_features = saved.feature_pipeline.transform(probe)[0]
+                self.assertFalse(
+                    np.allclose(
+                        expected_features, future_cache[FEATURE_PIPELINE].transform(probe)[0]
+                    )
+                )
+                expected_policy = {
+                    name: value.detach().cpu().numpy().copy()
+                    for name, value in model.policy.state_dict().items()
+                }
+                size = model.replay_buffer.size()
+                expected_replay = {
+                    name: getattr(model.replay_buffer, name)[:size].copy()
+                    for name in ("observations", "next_observations", "actions", "rewards", "dones")
+                }
+                cached_empty = owner.MODELCLASS.load(
+                    future_dk.data_path / f"{future_dk.model_filename}_model"
+                )
+                self.assertEqual(cached_empty.replay_buffer.size(), 0)
+                cached_old = owner.MODELCLASS.load(
+                    saved.data_path / f"{saved.model_filename}_model"
+                )
+                cached_old.replay_buffer = copy.deepcopy(future_model.replay_buffer)
+                owner.live = False
+                current_config = {
+                    **owner.config,
+                    "runmode": RunMode.BACKTEST,
+                    "timerange": "20260101-20260105",
+                    "config_files": ["/workspace/ReforceXY/user_data/config-template.json"],
+                }
+                current = FreqaiDataKitchen(current_config, live=False, pair=pair)
+                current.training_features_list = saved.training_features_list.copy()
+                current.label_list = saved.label_list.copy()
+                cutoff = int(pd.Timestamp("2026-01-03", tz="UTC").timestamp())
+                owner.dd.pair_dict[pair]["trained_timestamp"] = future.dd.pair_dict[pair][
+                    "trained_timestamp"
+                ]
+                previous = copy.deepcopy(owner.dd.pair_dict[pair])
+                for name, cached_model, cached in (
+                    ("future", future_model, future_cache),
+                    ("metadata_only", None, future_cache),
+                    ("empty_replay", cached_empty, saved_cache),
+                    ("future_replay", cached_old, saved_cache),
+                ):
+                    with self.subTest(cache=name):
+                        owner.dd.model_dictionary = (
+                            {pair: cached_model} if cached_model is not None else {}
+                        )
+                        owner.dd.meta_data_dictionary = {pair: cached}
+                        restored, pipeline = owner._resolve_deployment_state(
+                            current, pair, as_of_ts=cutoff
+                        )
+                        self.assertEqual(restored.gamma, model.gamma)
+                        for parameter, expected in expected_policy.items():
+                            np.testing.assert_array_equal(
+                                restored.policy.state_dict()[parameter].detach().cpu().numpy(),
+                                expected,
+                            )
+                        np.testing.assert_allclose(pipeline.transform(probe)[0], expected_features)
+                        self.assertEqual(restored.replay_buffer.size(), size)
+                        self.assertEqual(restored.replay_buffer.pos, model.replay_buffer.pos)
+                        self.assertEqual(restored.replay_buffer.device, restored.device)
+                        for field, expected in expected_replay.items():
+                            np.testing.assert_array_equal(
+                                getattr(restored.replay_buffer, field)[:size], expected
+                            )
+                        self.assertEqual(owner.dd.pair_dict[pair], previous)
+                        self.assertIs(owner.dd.meta_data_dictionary[pair], cached)
+                        if cached_model is not None:
+                            self.assertIs(owner.dd.model_dictionary[pair], cached_model)
+
+                owner.dd.model_dictionary = {pair: future_model}
+                owner.dd.meta_data_dictionary = {pair: future_cache}
+                (saved.data_path / saved.data["reforcexy_replay"]).unlink()
+                with self.assertRaises(DependencyException):
+                    owner._resolve_deployment_state(current, pair, as_of_ts=cutoff)
+                self.assertIs(owner.dd.model_dictionary[pair], future_model)
 
     def test_provenance_does_not_change_other_drawers(self):
         with tempfile.TemporaryDirectory() as temp:

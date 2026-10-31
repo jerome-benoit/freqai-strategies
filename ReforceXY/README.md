@@ -244,10 +244,11 @@ Training disables `shuffle_after_split`. HPO studies and saved best parameters
 are reused only when their objective identity matches.
 
 Backtests continue only from a saved policy whose training cutoff precedes
-the current window's end and its last available candle boundary. A later
-deployment under the same identifier is not reused for an earlier window,
-even when FreqAI has saved only metadata for intervening windows. Live and
-dry-run restarts still restore compatible deployed policies.
+the current window's end and its last available candle boundary. The policy,
+fitted feature pipeline and any required replay come from that saved artifact.
+A later deployment under the same identifier is not reused for an earlier
+window, even when FreqAI has saved only metadata for intervening windows.
+Live and dry-run restarts still restore compatible deployed policies.
 
 ## Live inference and backtesting
 

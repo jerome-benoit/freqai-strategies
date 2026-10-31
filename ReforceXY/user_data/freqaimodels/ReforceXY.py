@@ -1401,7 +1401,7 @@ class ReforceXY(BaseReinforcementLearningModel):
         """Restore independent training copies of the deployed policy and feature pipeline."""
         if not self.continual_learning:
             return None
-        model = self.dd.model_dictionary.get(pair)
+        model = self.dd.model_dictionary.get(pair) if self.live else None
         cached_model = model
         previous = self.dd.pair_dict.get(pair, {})
         if model is None and not previous.get("model_filename"):
@@ -1420,7 +1420,7 @@ class ReforceXY(BaseReinforcementLearningModel):
             ):
                 return None
         try:
-            cached = self.dd.meta_data_dictionary.get(pair, {})
+            cached = self.dd.meta_data_dictionary.get(pair, {}) if self.live else {}
             metadata = cached.get(METADATA)
             feature_pipeline = cached.get(FEATURE_PIPELINE)
             prefix: Path | None = None

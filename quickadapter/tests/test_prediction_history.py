@@ -1,5 +1,6 @@
 """Runtime contracts for FreqAI's native QuickAdapter prediction history.; requires the Freqtrade QA image."""
 
+import copy
 import unittest
 from types import SimpleNamespace
 from unittest import mock
@@ -7,7 +8,9 @@ from unittest import mock
 import numpy as np
 import pandas as pd
 from freqtrade.enums import RunMode
+from freqtrade.exceptions import DependencyException
 from freqtrade.exchange import timeframe_to_seconds
+from freqtrade.freqai.data_drawer import FEATURE_PIPELINE, LABEL_PIPELINE, METADATA
 from freqtrade.freqai.data_kitchen import FreqaiDataKitchen
 from qa_support import CONFIG_TEMPLATE, PAIR, QaTestCase, model_config, temporary_directory
 
@@ -177,6 +180,100 @@ class PredictionHistoryTest(QaTestCase):
                     self.assertEqual(backtest.dd.pair_dict[pair]["trained_timestamp"], future_ts)
                 else:
                     backtest.dd.save_metadata(dk)
+
+    def test_backtest_continuation_loads_the_validated_artifact_despite_future_caches(self):
+        with temporary_directory() as temp:
+
+            def deployment(day, offset, amplitude, estimators):
+                config = model_config(
+                    temp,
+                    freqai={
+                        "identifier": f"artifact-{estimators}",
+                        "optuna_hyperopt": {"enabled": False},
+                        "model_training_parameters": {"n_estimators": estimators},
+                    },
+                )
+                values = np.arange(48)
+                frame = pd.DataFrame(
+                    {
+                        "date": pd.date_range(day, periods=48, freq="5min", tz="UTC"),
+                        "%-feature": np.sin(values / 4) + offset,
+                        "&s-extrema": amplitude * np.cos(values / 5),
+                    }
+                )
+                owner = QuickAdapterRegressorV3(config=config)
+                owner.live = True
+                dk = FreqaiDataKitchen(config, live=True, pair=PAIR)
+                timestamp = int((frame["date"].iloc[-1] + pd.Timedelta(minutes=5)).timestamp())
+                dk.set_paths(PAIR, timestamp)
+                dk.set_new_model_names(PAIR, timestamp)
+                dk.training_features_list = ["%-feature"]
+                dk.label_list = ["&s-extrema"]
+                model = owner.train(frame, PAIR, dk)
+                owner.dd.get_pair_dict_info(PAIR)
+                owner.dd.pair_dict[PAIR]["trained_timestamp"] = timestamp
+                owner.dd.save_data(model, PAIR, dk)
+                return owner, dk, model, frame
+
+            owner, saved, model, frame = deployment("2026-01-01", 0.0, 1.0, 2)
+            future, _, future_model, _ = deployment("2026-02-01", 1000.0, 10.0, 5)
+            cached = future.dd.meta_data_dictionary[PAIR]
+            probe = frame[["%-feature"]]
+            labels = frame[["&s-extrema"]]
+            expected_features = saved.feature_pipeline.transform(probe)[0]
+            expected_labels = saved.label_pipeline.transform(labels)[0]
+            expected_predictions = model.predict(expected_features)
+            self.assertFalse(
+                np.allclose(expected_predictions, future_model.predict(expected_features))
+            )
+            self.assertFalse(
+                np.allclose(expected_features, cached[FEATURE_PIPELINE].transform(probe)[0])
+            )
+            self.assertFalse(
+                np.allclose(expected_labels, cached[LABEL_PIPELINE].transform(labels)[0])
+            )
+
+            owner.live = False
+            current_config = {
+                **owner.config,
+                "runmode": RunMode.BACKTEST,
+                "timerange": "20260101-20260105",
+                "config_files": [str(CONFIG_TEMPLATE)],
+            }
+            current = FreqaiDataKitchen(current_config, live=False, pair=PAIR)
+            current.training_features_list = ["%-feature"]
+            current.label_list = ["&s-extrema"]
+            cutoff = int(pd.Timestamp("2026-01-03", tz="UTC").timestamp())
+            # A metadata-only window may advance this timestamp, not the saved filename.
+            owner.dd.pair_dict[PAIR]["trained_timestamp"] = future.dd.pair_dict[PAIR][
+                "trained_timestamp"
+            ]
+            previous = copy.deepcopy(owner.dd.pair_dict[PAIR])
+            for model_cached, metadata_cached in ((True, True), (False, True), (True, False)):
+                with self.subTest(model_cached=model_cached, metadata_cached=metadata_cached):
+                    owner.dd.model_dictionary = {PAIR: future_model} if model_cached else {}
+                    owner.dd.meta_data_dictionary = {PAIR: cached} if metadata_cached else {}
+                    restored, features, label_pipeline = owner._resolve_deployment_state(
+                        current, PAIR, as_of_ts=cutoff
+                    )
+                    np.testing.assert_array_equal(
+                        restored.predict(expected_features), expected_predictions
+                    )
+                    np.testing.assert_allclose(features.transform(probe)[0], expected_features)
+                    np.testing.assert_allclose(label_pipeline.transform(labels)[0], expected_labels)
+                    self.assertEqual(owner.dd.pair_dict[PAIR], previous)
+                    if model_cached:
+                        self.assertIs(owner.dd.model_dictionary[PAIR], future_model)
+                    if metadata_cached:
+                        self.assertIs(owner.dd.meta_data_dictionary[PAIR], cached)
+
+            owner.dd.model_dictionary = {PAIR: future_model}
+            owner.dd.meta_data_dictionary = {PAIR: cached}
+            (saved.data_path / f"{saved.model_filename}_model.joblib").unlink()
+            with self.assertRaises(DependencyException):
+                owner._resolve_deployment_state(current, PAIR, as_of_ts=cutoff)
+            self.assertIs(owner.dd.model_dictionary[PAIR], future_model)
+            self.assertIs(owner.dd.meta_data_dictionary[PAIR][METADATA], cached[METADATA])
 
 
 if __name__ == "__main__":
