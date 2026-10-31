@@ -144,10 +144,11 @@ wins.
 ## Continual learning
 
 In backtests, continual training uses only a saved model whose training cutoff
-precedes the current window's end and its last available candle boundary. A
-later model left under the same identifier is not reused when a backtest is
-extended into the past. Live and dry-run restarts still restore compatible
-deployed models.
+precedes the current window's end and its last available candle boundary. The
+model and both fitted pipelines are restored from that saved artifact; missing
+or incompatible required files prevent continuation. A later model left under
+the same identifier is not reused when a backtest is extended into the past.
+Live and dry-run restarts still restore compatible deployed models.
 
 ## Backtest cache reuse
 
