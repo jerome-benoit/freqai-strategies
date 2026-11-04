@@ -211,6 +211,10 @@ class OptunaStorageTest(QaTestCase):
                 "objective_identity": "terminal-liquidation-risk-normalized-trained-policy-v5",
                 "params": {"gamma": 0.1},
             },
+            {
+                "objective_identity": "unshaped-evaluation-temporal-costs-trained-policy-v6",
+                "params": {"gamma": 0.1},
+            },
             {"objective_identity": ReforceXY._OPTUNA_OBJECTIVE_IDENTITY, "params": []},
         ):
             with self.subTest(payload=payload):

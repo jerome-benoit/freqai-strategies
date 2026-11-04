@@ -22,7 +22,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Set up uv
-        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: true
           cache-dependency-glob: .github/workflows/quality.yml
@@ -80,6 +80,7 @@ jobs:
           docker run --rm \
             --mount "type=bind,src=${GITHUB_WORKSPACE},dst=/workspace,readonly" \
             --workdir /workspace \
+            --env PYTHONPATH=/workspace/ReforceXY/user_data/strategies \
             --env FREQAI_QA_SHUFFLE_SEED=1 \
             --entrypoint python \
             "${{ matrix.image }}" \
@@ -93,7 +94,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Set up uv
-        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: true
           cache-dependency-glob: ReforceXY/reward_space_analysis/uv.lock

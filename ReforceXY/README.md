@@ -179,6 +179,12 @@ HPO runs only when `freqai.enabled=true`,
 and remains supported for plain training, including with raw OHLC feature
 removal.
 
+Training uses the top-level `fee` when configured, including `0`. Otherwise it
+uses the exchange's maker-fee estimate for the pair being trained, not the
+whitelist's first pair. This also works with chart-history providers without a
+pairlist. A provider without an exchange requires an explicit `fee`; exchange
+errors are not replaced with a synthetic fee.
+
 `train_cycles` requests approximately training rows × cycles per HPO trial
 and final fit; environment and algorithm update boundaries round the actual
 budget. It is not an exact episode count. Trials are serialized (one Optuna
@@ -220,8 +226,9 @@ before constructing or replacing environments. Validation follows HPO overrides
 and the resumed learner's gamma, so a valid higher-priority value can supersede
 an invalid base value. A persisted learner with missing or invalid gamma cannot
 continue training. Learner and environment use the same effective discount.
-Incompatible reward-objective identities reset persisted HPO studies and cause
-stale best-parameter payloads to be ignored rather than warm-started.
+The per-pair fee correction changes the HPO objective identity. Existing studies
+reset, and saved best parameters from earlier objective identities are ignored
+rather than warm-started. Deployed policies are not deleted.
 
 ## Continual learning
 
@@ -244,10 +251,11 @@ Training disables `shuffle_after_split`. HPO studies and saved best parameters
 are reused only when their objective identity matches.
 
 Backtests continue only from a saved policy whose training cutoff precedes
-the current window's end and its last available candle boundary. A later
-deployment under the same identifier is not reused for an earlier window,
-even when FreqAI has saved only metadata for intervening windows. Live and
-dry-run restarts still restore compatible deployed policies.
+the current window's end and its last available candle boundary. The policy,
+fitted feature pipeline and any required replay come from that saved artifact.
+A later deployment under the same identifier is not reused for an earlier
+window, even when FreqAI has saved only metadata for intervening windows.
+Live and dry-run restarts still restore compatible deployed policies.
 
 ## Live inference and backtesting
 
@@ -286,6 +294,15 @@ For native backtests, set both `freqai.rl_config.add_state_info=false` and
 Use a fresh identifier after observation-shape changes. Keep chronological
 splits; training disables `shuffle_after_split`, and the native RL base
 disables row-removing SVM/DBSCAN/DI outlier removal to preserve trajectories.
+
+Native result-cache reuse checks implementation and runtime versions; see
+[backtest result caching](../docs/evaluation.md#backtest-result-caching).
+This does not reset saved policies or native FreqAI prediction caches. Keep
+separate identifiers when comparing configurations or training environments.
+
+Archived strategy charts require the extracted `RLAgentStrategy` source, not a
+fallback to the current strategy. They still use the current server's FreqAI
+model and configuration; see [archived strategy charts](../docs/evaluation.md#archived-strategy-charts).
 
 ## Configuration reference
 
@@ -374,7 +391,7 @@ Moving base images can change them; record the runtime version.
 | freqai.model_training_parameters.learning_rate                 | SDK default unless lr_schedule=true; then initial 0.0003 if omitted                          | SDK numeric/schedule; app wraps numeric only                                                             | Omitted                                            | Do not call 0.0003 an unconditional app default.                                                                                                                                                    |
 | freqai.model_training_parameters.clip_range                    | SDK default unless PPO-family cr_schedule=true; then initial 0.2 if omitted                  | SDK numeric/schedule; app wraps numeric only                                                             | Omitted                                            | Only PPO family schedule conversion.                                                                                                                                                                |
 | freqai.model_training_parameters.gpu_memory_fraction           | null/omitted disables                                                                        | Numeric in (0,1] intended; ignored invalid bounds/no CUDA, not robust type validation                    | Omitted                                            | App-only; applies torch CUDA per-process limit to device 0, removed before SDK constructor.                                                                                                         |
-| freqai.model_training_parameters.device                        | No app fallback; SDK auto                                                                    | PyTorch/SB3 device specification                                                                         | auto                                               | Forwarded; doc examples auto/cpu/cuda/cuda:0 are not an app-enforced exhaustive choice list.                                                                                                        |
+| freqai.model_training_parameters.device                        | SDK auto when omitted                                                                        | PyTorch/SB3 device specification                                                                         | auto                                               | Forwarded to new learners and continuation archive loads; live cached copies retain their deployed device. Native device syntax applies.                                                            |
 | freqai.model_training_parameters.verbose                       | SDK constructor default; callback lookup fallback 0                                          | SDK verbosity integer                                                                                    | 1                                                  | Forwarded to constructor, also read for callback verbosity.                                                                                                                                         |
 | freqai.model_training_parameters.policy_kwargs.net_arch        | [128,128] per branch for PPO family; [128,128] for others                                    | small\|medium\|large\|extra_large, list of layer widths; PPO family additionally {pi:[...],vf:[...]}     | Omitted                                            | Presets use two layers of 128/256/512/1024; PPO list expanded to both heads, invalid/missing head resets to [128,128]. Other families accept list or presets. Layer element validation remains SDK. |
 | freqai.model_training_parameters.policy_kwargs.activation_fn   | relu                                                                                         | relu\|tanh\|elu\|leaky_relu                                                                              | Omitted                                            | Converted to torch class; unknown name silently falls back to ReLU.                                                                                                                                 |

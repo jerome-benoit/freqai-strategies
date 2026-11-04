@@ -143,6 +143,7 @@ class OptunaLifecycleTest(QaTestCase):
             None,
             "terminal-liquidation-risk-normalized-trained-policy-v3",
             "terminal-liquidation-risk-normalized-trained-policy-v5",
+            "unshaped-evaluation-temporal-costs-trained-policy-v6",
         ):
             with self.subTest(identity=identity):
                 model = self.model()

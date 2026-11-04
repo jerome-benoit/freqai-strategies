@@ -144,12 +144,17 @@ wins.
 ## Continual learning
 
 In backtests, continual training uses only a saved model whose training cutoff
-precedes the current window's end and its last available candle boundary. A
-later model left under the same identifier is not reused when a backtest is
-extended into the past. Live and dry-run restarts still restore compatible
-deployed models.
+precedes the current window's end and its last available candle boundary. The
+model and both fitted pipelines are restored from that saved artifact; missing
+or incompatible required files prevent continuation. A later model left under
+the same identifier is not reused when a backtest is extended into the past.
+Live and dry-run restarts still restore compatible deployed models.
 
 ## Backtest cache reuse
+
+Native result-cache reuse also checks implementation and runtime versions; see
+[backtest result caching](../docs/evaluation.md#backtest-result-caching).
+The model/prediction cache below is a separate layer.
 
 Backtests store reusable models and predictions under
 `models/<identifier>/backtesting/<fingerprint>/`. Cache identity includes input
@@ -174,6 +179,10 @@ fresh directory, increasing training time and disk use. Plain text can use panda
 Cached and fresh windows return the same predictions and prepared indicator
 columns. `freqai_backtest_live_models=true` is a separate Freqtrade mode: it
 replays stored live predictions without training models.
+
+Archived strategy chart replay is unsupported because native backtest archives
+omit QuickAdapter's helper modules. This does not disable normal backtesting or
+prediction-cache reuse; see [archived strategy charts](../docs/evaluation.md#archived-strategy-charts).
 
 ## Prediction warmup and restarts
 
@@ -313,7 +322,7 @@ The effective leverage is clamped to `[1.0, max_leverage]`, including proposal f
 | Path                                                           | Runtime fallback       | Type / Range                                                        | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | -------------------------------------------------------------- | ---------------------- | ------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | exit_pricing.trade_natr_method                                 | `moving_average`       | enum {`moving_average`,`quantile_interpolation`,`weighted_average`} | Trade NATR (Normalized Average True Range) aggregation for stoploss and take-profit distances. `moving_average` uses KAMA to preserve nonnegative volatility. The stoploss never loosens, including after partial exits, and remains unchanged on order fills.                                                                                                                                                                                                                                                               |
-| exit_pricing.final_take_profit_retracement_fraction            | 0.5                    | float (0,1]                                                         | Fraction of the final take-profit target distance used as the frozen trailing retracement distance after the final target arms the exit. The final exit tracks the best subsequent per-candle rate and exits only after this material adverse move; elapsed stagnation alone does not exit. Plot annotations show only the current trail boundary from the candle that established it; earlier boundaries are not retained.                                                                                                  |
+| exit_pricing.final_take_profit_retracement_fraction            | 0.375                  | float (0,1]                                                         | Fraction of the final take-profit target distance used as the frozen trailing retracement distance after the final target arms the exit. The final exit tracks the best subsequent per-candle rate and exits only after this material adverse move; elapsed stagnation alone does not exit. Plot annotations show only the current trail boundary from the candle that established it; earlier boundaries are not retained.                                                                                                  |
 | exit_pricing.take_profit_stage_natr_multiplier_fraction_series | `fibonacci_extensions` | enum {`fibonacci_extensions`,`pi_extensions`}                       | With the default four rungs, partial target distances are approximately 23.6%, 38.2% and 61.8% of the full target distance for `fibonacci_extensions`, or 3.2%, 10.1% and 31.8% for `pi_extensions`. Pi places partial targets closer to entry. Partial fractions are recomputed when the rung count changes; the final rung always uses the full distance. This setting changes target distances only, not nominal stake shares; execution constraints are described in the decision cycle. Invalid values use the default. |
 
 ### Reversal confirmation
@@ -437,7 +446,7 @@ default five splits.
 | freqai.label_prediction.threshold_method    | `mean`           | enum {`mean`,`isodata`,`li`,`minimum`,`otsu`,`triangle`,`yen`,`median`,`soft_extremum`} | Thresholding method for prediction thresholds.                                                                                                                                                                                                                                                        |
 | freqai.label_prediction.soft_extremum_alpha | 12.0             | float >= 0                                                                              | Alpha for `soft_extremum` threshold method.                                                                                                                                                                                                                                                           |
 | freqai.label_prediction.outlier_quantile    | 0.999            | float (0,1)                                                                             | Quantile threshold for predictions outlier filtering.                                                                                                                                                                                                                                                 |
-| freqai.label_prediction.keep_fraction       | 0.0075           | float (0,1]                                                                             | Fraction of extrema used for thresholds. 1 uses all, lower values keep only most significant. Applies to `rank_extrema` and `rank_peaks`; ignored for `partition`.                                                                                                                                    |
+| freqai.label_prediction.keep_fraction       | 0.005            | float (0,1]                                                                             | Fraction of extrema used for thresholds. 1 uses all, lower values keep only most significant. Applies to `rank_extrema` and `rank_peaks`; ignored for `partition`.                                                                                                                                    |
 
 ### Optuna / HPO
 

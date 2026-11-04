@@ -164,7 +164,7 @@
     "label_prediction": {
       "method": "thresholding",
       "threshold_method": "isodata",
-      "keep_fraction": 0.0075
+      "keep_fraction": 0.005
       // Alternative per-label format: remove the sibling keys above, then uncomment:
       // "default": {
       //   "method": "thresholding",

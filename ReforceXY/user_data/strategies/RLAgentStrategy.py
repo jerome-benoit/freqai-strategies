@@ -1,15 +1,18 @@
 import datetime
 import logging
 from functools import reduce
+from pathlib import Path
 from typing import Any, Final, Literal
 
 import numpy as np
 import pandas as pd
 from freqtrade.constants import LongShort
+from freqtrade.enums import RunMode
 from freqtrade.freqai.RL.Base5ActionRLEnv import Actions
 
 # import talib.abstract as ta
 from freqtrade.persistence import Trade
+from freqtrade.resolvers.iresolver import PathModifier
 from freqtrade.strategy import IStrategy
 from pandas import DataFrame
 
@@ -60,6 +63,15 @@ class RLAgentStrategy(IStrategy):
     _ACTION_ENTER_SHORT: Final[int] = Actions.Short_enter.value
     _ACTION_EXIT_SHORT: Final[int] = Actions.Short_exit.value
     _leverage_warning_state: tuple[str, str] | None = None
+
+    def __init__(self, config: dict[str, Any], *args, **kwargs) -> None:
+        super().__init__(config, *args, **kwargs)
+        if config.get("runmode") in (RunMode.BACKTEST, RunMode.HYPEROPT):
+            # Archive charts run in WEBSERVER mode and need no external cache helper.
+            with PathModifier(Path(__file__).parent):
+                from BacktestIdentity import bind_backtest_implementation
+
+            bind_backtest_implementation(self)
 
     @property
     def can_short(self) -> bool:
