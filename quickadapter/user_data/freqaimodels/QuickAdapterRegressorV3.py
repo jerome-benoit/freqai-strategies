@@ -3603,10 +3603,10 @@ class QuickAdapterRegressorV3(BaseRegressionModel):
         """Chronological train/test split using sklearn's TimeSeriesSplit final fold.
 
         ``n_splits`` controls train/test proportions (higher = larger train).
-        ``gap`` excludes samples between train and test; when 0, auto-derived
-        from ``label_period_candles``. ``max_train_size`` enables sliding
-        window mode. ``weights`` is sliced positionally via ``train_idx`` /
-        ``test_idx``.
+        ``gap`` excludes samples between train and test. When 0, it uses the label
+        horizon in causal mode, otherwise ``label_period_candles``.
+        ``max_train_size`` enables sliding windows. ``weights`` is sliced
+        positionally via ``train_idx`` / ``test_idx``.
         """
         feat_dict = self.ft_params
         causal_mode = self._causal_mode

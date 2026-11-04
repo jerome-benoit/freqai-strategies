@@ -236,7 +236,7 @@ DEFAULTS_LABEL_PREDICTION: Final[dict[str, Any]] = {
     "threshold_method": SKIMAGE_THRESHOLD_METHODS[0],  # "mean"
     "outlier_quantile": 0.999,
     "soft_extremum_alpha": 12.0,
-    "keep_fraction": 0.0075,
+    "keep_fraction": 0.005,
 }
 
 
