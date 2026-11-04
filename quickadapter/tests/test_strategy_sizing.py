@@ -195,6 +195,7 @@ class RuntimeSizingTest(QaTestCase):
             directory,
             runmode=RunMode.BACKTEST,
             trading_mode="futures",
+            max_open_trades=4,
             exit_pricing={
                 "trade_natr_method": "quantile_interpolation",
                 "final_take_profit_retracement_fraction": 0.25,
@@ -281,6 +282,64 @@ class RuntimeSizingTest(QaTestCase):
 
     def exit(self, position, rate=100.0):
         return self.model.custom_exit(PAIR, position, self.now, rate, 0.0)
+
+    def entry(self, side="long", rate=100.0, open_trades=()):
+        with (
+            mock.patch.object(Trade, "get_open_trade_count", return_value=len(open_trades)),
+            mock.patch.object(Trade, "get_open_trades", return_value=open_trades),
+        ):
+            return self.model.confirm_trade_entry(
+                PAIR, "limit", 1.0, rate, "GTC", self.now, None, side
+            )
+
+    def test_entry_switch_only_bypasses_the_reversal_filter(self):
+        for side, passing_rate in (("long", 120.0), ("short", 80.0)):
+            with self.subTest(side=side):
+                self.assertFalse(self.entry(side))
+                self.assertTrue(self.entry(side, passing_rate))
+        for lookback in (0, len(self.frame)):
+            self.model.reversal_confirmation["lookback_period_candles"] = lookback
+            for enabled in (True, False):
+                self.model.reversal_confirmation["entry_enabled"] = enabled
+                for side, passing_rate in (("long", 120.0), ("short", 80.0)):
+                    with self.subTest(lookback=lookback, enabled=enabled, side=side):
+                        self.assertIs(self.entry(side), not enabled)
+                        self.assertIs(self.entry(side, passing_rate), not enabled or lookback == 0)
+
+    def test_disabled_reversal_preserves_entry_rate_and_data_guards(self):
+        self.model.reversal_confirmation["entry_enabled"] = False
+        for side in ("long", "short"):
+            self.assertTrue(self.entry(side, np.float64(100.0)))
+            for rate in (np.nan, np.inf, -np.inf, "100", None, True):
+                with self.subTest(side=side, rate=rate):
+                    self.assertFalse(self.entry(side, rate))
+        self.frame = self.frame.iloc[:0]
+        for side in ("long", "short"):
+            with self.subTest(side=side):
+                self.assertFalse(self.entry(side))
+
+    def test_disabled_reversal_preserves_side_authorization(self):
+        self.model.reversal_confirmation["entry_enabled"] = False
+        self.assertFalse(self.entry("sideways"))
+        self.model.config["trading_mode"] = "spot"
+        self.assertFalse(self.entry("short"))
+        self.assertTrue(self.entry("long"))
+
+    def test_disabled_reversal_preserves_global_and_per_side_capacity(self):
+        self.model.reversal_confirmation["entry_enabled"] = False
+        full = [self.position(short) for short in (False, True, False, True)]
+        for short, side in ((False, "long"), (True, "short")):
+            with self.subTest(side=side):
+                self.assertTrue(self.entry(side, open_trades=[self.position(short)]))
+                self.assertFalse(self.entry(side, open_trades=full))
+                self.assertFalse(
+                    self.entry(side, open_trades=[self.position(short), self.position(short)])
+                )
+                self.assertTrue(
+                    self.entry(
+                        side, open_trades=[self.position(not short), self.position(not short)]
+                    )
+                )
 
     def test_stoploss_distance_uses_current_not_entry_price(self):
         # Entry NATR 4 has mean rank 0.25 in [4, 8], giving interpolated NATR 7.
@@ -697,20 +756,22 @@ class RuntimeSizingTest(QaTestCase):
             (False, 0.5, 0.6, 80.0, "maxima_detected_long"),
             (True, -0.5, -0.6, 120.0, "minima_detected_short"),
         ):
-            with self.subTest(short=short):
-                position = self.position(short)
-                self.custom_data(position)
-                self.frame[EXTREMA_COLUMN] = boundary
-                self.assertIsNone(self.exit(position, rate))
-                self.frame[EXTREMA_COLUMN] = score
-                self.assertIsNone(self.exit(position, 100.0))
-                for prediction, inlier in ((0, 1), (1, 0)):
-                    self.frame["do_predict"] = prediction
-                    self.frame["DI_catch"] = inlier
+            for enabled in (True, False):
+                self.model.reversal_confirmation["entry_enabled"] = enabled
+                with self.subTest(short=short, entry_enabled=enabled):
+                    position = self.position(short)
+                    self.custom_data(position)
+                    self.frame[EXTREMA_COLUMN] = boundary
                     self.assertIsNone(self.exit(position, rate))
-                self.frame["do_predict"] = 1
-                self.frame["DI_catch"] = 1
-                self.assertEqual(self.exit(position, rate), tag)
+                    self.frame[EXTREMA_COLUMN] = score
+                    self.assertIsNone(self.exit(position, 100.0))
+                    for prediction, inlier in ((0, 1), (1, 0)):
+                        self.frame["do_predict"] = prediction
+                        self.frame["DI_catch"] = inlier
+                        self.assertIsNone(self.exit(position, rate))
+                    self.frame["do_predict"] = 1
+                    self.frame["DI_catch"] = 1
+                    self.assertEqual(self.exit(position, rate), tag)
 
     def test_final_exit_guards_preserve_unarmed_state(self):
         original = self.frame.copy()

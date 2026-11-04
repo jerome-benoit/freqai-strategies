@@ -487,7 +487,7 @@ class QuickAdapterV3(IStrategy):
         return exit_stage in QuickAdapterV3.partial_exit_stages()
 
     @cached_property
-    def reversal_confirmation(self) -> dict[str, int | float]:
+    def reversal_confirmation(self) -> dict[str, bool | int | float]:
         return get_reversal_confirmation_config(self.config.get("reversal_confirmation"), logger)
 
     @cached_property
@@ -664,6 +664,7 @@ class QuickAdapterV3(IStrategy):
                 )
 
         logger.info("Reversal Confirmation:")
+        logger.info(f"  entry_enabled: {reversal_confirmation['entry_enabled']}")
         logger.info(
             f"  lookback_period_candles: {reversal_confirmation['lookback_period_candles']}"
         )
@@ -2535,6 +2536,8 @@ class QuickAdapterV3(IStrategy):
         if df.empty:
             logger.info(f"[{pair}] Denied {side} {QuickAdapterV3._ORDER_ENTRY}: dataframe is empty")
             return False
+        if not self.reversal_confirmation["entry_enabled"]:
+            return is_finite_number(rate)
         return bool(
             self.reversal_confirmed(
                 df,
