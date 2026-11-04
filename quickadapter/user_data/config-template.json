@@ -39,7 +39,7 @@
     "price_last_balance": 0.0
   },
   "reversal_confirmation": {
-    "entry_enabled": true,
+    "enabled": true,
     "min_natr_multiplier_fraction": 0.0095,
     "max_natr_multiplier_fraction": 0.0125
   },

@@ -664,7 +664,7 @@ class QuickAdapterV3(IStrategy):
                 )
 
         logger.info("Reversal Confirmation:")
-        logger.info(f"  entry_enabled: {reversal_confirmation['entry_enabled']}")
+        logger.info(f"  enabled: {reversal_confirmation['enabled']}")
         logger.info(
             f"  lookback_period_candles: {reversal_confirmation['lookback_period_candles']}"
         )
@@ -2536,7 +2536,7 @@ class QuickAdapterV3(IStrategy):
         if df.empty:
             logger.info(f"[{pair}] Denied {side} {QuickAdapterV3._ORDER_ENTRY}: dataframe is empty")
             return False
-        if not self.reversal_confirmation["entry_enabled"]:
+        if not self.reversal_confirmation["enabled"]:
             return is_finite_number(rate)
         return bool(
             self.reversal_confirmed(

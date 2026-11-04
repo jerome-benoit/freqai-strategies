@@ -32,7 +32,7 @@ CANONICAL_PROTECTIONS: dict[str, Any] = {
     "stoploss": {"enabled": True},
 }
 CANONICAL_REVERSAL: dict[str, Any] = {
-    "entry_enabled": True,
+    "enabled": True,
     "lookback_period_candles": 0,
     "decay_fraction": 0.5,
     "min_natr_multiplier_fraction": 0.0095,
@@ -423,22 +423,22 @@ class UtilsConfigResolutionTest(QaTestCase):
         for enabled in (True, False):
             with self.subTest(enabled=enabled):
                 with recorded_warnings() as (logger, sink):
-                    resolved = get_reversal_confirmation_config({"entry_enabled": enabled}, logger)
-                self.assertIs(resolved["entry_enabled"], enabled)
+                    resolved = get_reversal_confirmation_config({"enabled": enabled}, logger)
+                self.assertIs(resolved["enabled"], enabled)
                 self.assertEqual([], sink)
 
         for rejected in (0, 1, "false", None, np.bool_(False)):
             with self.subTest(rejected=rejected):
                 with recorded_warnings() as (logger, sink):
-                    resolved = get_reversal_confirmation_config({"entry_enabled": rejected}, logger)
-                self.assertIs(resolved["entry_enabled"], True)
-                self.assertTrue(any("entry_enabled" in message for message in sink))
+                    resolved = get_reversal_confirmation_config({"enabled": rejected}, logger)
+                self.assertIs(resolved["enabled"], True)
+                self.assertTrue(any("reversal_confirmation" in message for message in sink))
 
     def test_disabled_entry_reversal_still_normalizes_numeric_constraints(self) -> None:
         with recorded_warnings() as (logger, _):
             resolved = get_reversal_confirmation_config(
                 {
-                    "entry_enabled": False,
+                    "enabled": False,
                     "lookback_period_candles": -1,
                     "decay_fraction": 0,
                     "min_natr_multiplier_fraction": np.nan,
@@ -446,7 +446,7 @@ class UtilsConfigResolutionTest(QaTestCase):
                 },
                 logger,
             )
-        self.assertIs(resolved["entry_enabled"], False)
+        self.assertIs(resolved["enabled"], False)
         self.assertGreaterEqual(resolved["lookback_period_candles"], 0)
         self.assertGreater(resolved["decay_fraction"], 0)
         self.assertLessEqual(resolved["decay_fraction"], 1)

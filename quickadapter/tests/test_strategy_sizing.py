@@ -300,14 +300,14 @@ class RuntimeSizingTest(QaTestCase):
         for lookback in (0, len(self.frame)):
             self.model.reversal_confirmation["lookback_period_candles"] = lookback
             for enabled in (True, False):
-                self.model.reversal_confirmation["entry_enabled"] = enabled
+                self.model.reversal_confirmation["enabled"] = enabled
                 for side, passing_rate in (("long", 120.0), ("short", 80.0)):
                     with self.subTest(lookback=lookback, enabled=enabled, side=side):
                         self.assertIs(self.entry(side), not enabled)
                         self.assertIs(self.entry(side, passing_rate), not enabled or lookback == 0)
 
     def test_disabled_reversal_preserves_entry_rate_and_data_guards(self):
-        self.model.reversal_confirmation["entry_enabled"] = False
+        self.model.reversal_confirmation["enabled"] = False
         for side in ("long", "short"):
             self.assertTrue(self.entry(side, np.float64(100.0)))
             for rate in (np.nan, np.inf, -np.inf, "100", None, True):
@@ -319,14 +319,14 @@ class RuntimeSizingTest(QaTestCase):
                 self.assertFalse(self.entry(side))
 
     def test_disabled_reversal_preserves_side_authorization(self):
-        self.model.reversal_confirmation["entry_enabled"] = False
+        self.model.reversal_confirmation["enabled"] = False
         self.assertFalse(self.entry("sideways"))
         self.model.config["trading_mode"] = "spot"
         self.assertFalse(self.entry("short"))
         self.assertTrue(self.entry("long"))
 
     def test_disabled_reversal_preserves_global_and_per_side_capacity(self):
-        self.model.reversal_confirmation["entry_enabled"] = False
+        self.model.reversal_confirmation["enabled"] = False
         full = [self.position(short) for short in (False, True, False, True)]
         for short, side in ((False, "long"), (True, "short")):
             with self.subTest(side=side):
@@ -757,8 +757,8 @@ class RuntimeSizingTest(QaTestCase):
             (True, -0.5, -0.6, 120.0, "minima_detected_short"),
         ):
             for enabled in (True, False):
-                self.model.reversal_confirmation["entry_enabled"] = enabled
-                with self.subTest(short=short, entry_enabled=enabled):
+                self.model.reversal_confirmation["enabled"] = enabled
+                with self.subTest(short=short, enabled=enabled):
                     position = self.position(short)
                     self.custom_data(position)
                     self.frame[EXTREMA_COLUMN] = boundary
