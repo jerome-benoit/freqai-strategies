@@ -332,8 +332,8 @@ class LabelTransformerTest(QaTestCase):
         self.assertEqual(DEFAULTS_LABEL_PIPELINE, before)
 
     def test_a_flat_config_dict_is_read_as_the_default_block(self):
-        # The regressor hands over whatever get_label_pipeline_config produced, which may carry
-        # pipeline keys at the top level instead of under "default".
+        # Direct LabelTransformer callers may pass a flat pipeline configuration.
+        # The regressor instead passes the normalized "default"/"columns" mapping.
         #
         # A round trip alone is satisfied by ANY invertible pipeline, including one that
         # ignores the flat dict entirely and falls back to `DEFAULTS_LABEL_PIPELINE`

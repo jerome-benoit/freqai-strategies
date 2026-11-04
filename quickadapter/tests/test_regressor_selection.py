@@ -1233,10 +1233,10 @@ class RegressorSelectionTest(QaTestCase):
         # size 0 is the one case that may legitimately keep nothing, and keep_fraction
         # does not force a candidate out of a set that does not exist.
         self.assertEqual(QuickAdapterRegressorV3._calculate_n_kept_extrema(0, 1.0), 0)
-        self.assertEqual(QuickAdapterRegressorV3._calculate_n_kept_extrema(0, 0.0075), 0)
+        self.assertEqual(QuickAdapterRegressorV3._calculate_n_kept_extrema(0, 0.005), 0)
 
     def test_a_non_empty_extremum_set_always_keeps_at_least_one(self):
-        for keep_fraction in (0.0, 0.0075, 0.5, 1.0):
+        for keep_fraction in (0.0, 0.005, 0.5, 1.0):
             with self.subTest(keep_fraction=keep_fraction):
                 self.assertGreaterEqual(
                     QuickAdapterRegressorV3._calculate_n_kept_extrema(10, keep_fraction), 1
@@ -1244,10 +1244,10 @@ class RegressorSelectionTest(QaTestCase):
 
     def test_the_kept_count_uses_banker_rounding_not_ceiling(self):
         # round() is round-half-to-even: 133 * 0.5 == 66.5 keeps 66, not 67, and a
-        # keep_fraction of 0.0075 over 133 extrema still keeps only the floor of one.
+        # keep_fraction of 0.005 over 133 extrema still keeps only the floor of one.
         self.assertEqual(QuickAdapterRegressorV3._calculate_n_kept_extrema(133, 0.5), 66)
         self.assertEqual(QuickAdapterRegressorV3._calculate_n_kept_extrema(3, 0.5), 2)
-        self.assertEqual(QuickAdapterRegressorV3._calculate_n_kept_extrema(133, 0.0075), 1)
+        self.assertEqual(QuickAdapterRegressorV3._calculate_n_kept_extrema(133, 0.005), 1)
         self.assertEqual(QuickAdapterRegressorV3._calculate_n_kept_extrema(10, 0.5), 5)
         self.assertEqual(QuickAdapterRegressorV3._calculate_n_kept_extrema(10, 1.0), 10)
 

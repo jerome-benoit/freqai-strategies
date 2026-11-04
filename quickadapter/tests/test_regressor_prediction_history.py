@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 import scipy as sp
 from freqtrade.freqai.freqai_interface import IFreqaiModel
+from LabelTransformer import DEFAULTS_LABEL_PREDICTION
 from qa_support import PAIR, QaTestCase
 from Utils import _OPTUNA_NAMESPACES, DEFAULTS_LABEL_PIPELINE
 
@@ -132,14 +133,7 @@ def calibrated(
     model = regressor(
         _fit_live_predictions_candles=candles if budget is None else budget,
         label_prediction={
-            "default": {
-                "method": "thresholding",
-                "selection_method": "rank_extrema",
-                "threshold_method": "mean",
-                "outlier_quantile": 0.999,
-                "soft_extremum_alpha": 12.0,
-                "keep_fraction": 0.0075,
-            },
+            "default": dict(DEFAULTS_LABEL_PREDICTION),
             "columns": {},
         },
         min_max_pred=lambda *args, **kwargs: (-0.4, 0.6),
