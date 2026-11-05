@@ -47,12 +47,13 @@ and installed dependency versions when comparing runs.
    `&s-extrema > maxima_threshold`, with the same validity gates. Equality does
    not trigger an entry. Adaptive thresholds need the real-prediction warmup
    described below.
-3. Entry confirmation also checks the current order price for the configured
-   volatility-adjusted reversal, available history, global capacity and per-side
-   capacity. A prediction signal alone does not guarantee a trade. Spot rejects
-   shorts; margin/futures can allow them. With both sides allowed, an odd finite
-   global capacity is rounded up before halving for each side; the global limit
-   still applies. `max_open_trades=-1` means unlimited capacity.
+3. Entry confirmation checks available data, global capacity and per-side capacity.
+   By default it also requires the configured volatility-adjusted price reversal
+   and confirming history; see [Reversal confirmation](#reversal-confirmation).
+   A prediction signal alone does not guarantee a trade. Spot rejects shorts;
+   margin/futures can allow them. With both sides allowed, an odd finite global
+   capacity is rounded up before halving for each side; the global limit still
+   applies. `max_open_trades=-1` means unlimited capacity.
 4. Open trades use the custom volatility-based stoploss, which never loosens,
    including after partial exits. The strategy stoploss is -2.5%; leverage,
    execution and exchange conditions affect the actual outcome.
@@ -327,12 +328,13 @@ The effective leverage is clamped to `[1.0, max_leverage]`, including proposal f
 
 ### Reversal confirmation
 
-| Path                                               | Runtime fallback | Type / Range | Description                                                                                                                                                |
-| -------------------------------------------------- | ---------------- | ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| reversal_confirmation.lookback_period_candles      | 0                | int >= 0     | Prior confirming candles; 0 = none. With confirmation enabled, unmeasurable history rejects entries, while a valid current exit may still reduce exposure. |
-| reversal_confirmation.decay_fraction               | 0.5              | float (0,1]  | Geometric per-candle volatility adjusted reversal threshold relaxation factor.                                                                             |
-| reversal_confirmation.min_natr_multiplier_fraction | 0.0095           | float [0,1]  | Lower bound fraction (< upper bound) for volatility adjusted reversal threshold.                                                                           |
-| reversal_confirmation.max_natr_multiplier_fraction | 0.0125           | float [0,1]  | Upper bound fraction (> lower bound) for volatility adjusted reversal threshold.                                                                           |
+| Path                                               | Runtime fallback | Type / Range | Description                                                                                                                                                                                           |
+| -------------------------------------------------- | ---------------- | ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| reversal_confirmation.enabled                      | true             | bool         | Require price/history reversal for entries. `false` bypasses only this filter; exits and other entry guards remain active. Non-boolean values warn and use `true`. Numeric settings remain validated. |
+| reversal_confirmation.lookback_period_candles      | 0                | int >= 0     | Prior confirming candles; 0 checks only the current price. With the entry filter enabled, unmeasurable required history rejects entries. Exits may retain valid current-price confirmation.           |
+| reversal_confirmation.decay_fraction               | 0.5              | float (0,1]  | Geometric per-candle volatility adjusted reversal threshold relaxation factor.                                                                                                                        |
+| reversal_confirmation.min_natr_multiplier_fraction | 0.0095           | float [0,1]  | Lower bound fraction (< upper bound) for volatility adjusted reversal threshold.                                                                                                                      |
+| reversal_confirmation.max_natr_multiplier_fraction | 0.0125           | float [0,1]  | Upper bound fraction (> lower bound) for volatility adjusted reversal threshold.                                                                                                                      |
 
 ### Regressor model
 
