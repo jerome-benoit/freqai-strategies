@@ -1052,42 +1052,78 @@ TRADE_NATR_METHODS: Final[tuple[TradeNatrMethod, ...]] = (
 )
 
 
-TakeProfitStageNatrMultiplierFractionSeries = Literal["fibonacci_extensions", "pi_extensions"]
+TakeProfitStageNatrMultiplierFractionSeries = Literal[
+    "fibonacci_extensions",
+    "equal_division",
+    "gann_octaves",
+]
 TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_SERIES: Final[
     tuple[TakeProfitStageNatrMultiplierFractionSeries, ...]
 ] = (
     "fibonacci_extensions",
-    "pi_extensions",
+    "equal_division",
+    "gann_octaves",
 )
 
-# Extension bases: stage ``k`` of ``n`` uses the reciprocal of ``base ** (n - k)``.
-# These fractions place partial targets inside the full take-profit distance;
-# they do not extend it. Fibonacci uses integer powers of phi; pi uses integer
-# powers of pi as a custom geometric construction, not a trading convention.
-# The strategy appends the final fraction ``1.0`` to the generated
-# partial-target distance ladder.
-_TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_BASES: Final[dict[str, float]] = {
-    "fibonacci_extensions": (1.0 + math.sqrt(5.0)) / 2.0,
-    "pi_extensions": math.pi,
-}
+# Series place partial targets strictly inside the full take-profit distance;
+# they never extend it. The strategy appends the independent final fraction
+# ``1.0`` to the generated partial-target ladder. Each series is dispatched by
+# its index into TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_SERIES.
+# The Fibonacci retracement base (the golden ratio): the closest partial
+# fraction is 1 / base = 0.618, at most 2/3, keeping rungs inside the move.
+_TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_BASE: Final[float] = (1.0 + math.sqrt(5.0)) / 2.0
+# Gann octave (``i / 8``) and third (``1/3``, ``2/3``) levels strictly inside the
+# full move, ascending; the series takes the levels closest to the full distance,
+# so it defines at most nine partial rungs.
+_GANN_OCTAVE_LEVELS: Final[tuple[float, ...]] = tuple(
+    sorted([i / 8.0 for i in range(1, 8)] + [1.0 / 3.0, 2.0 / 3.0])
+)
 
-# The closest partial fraction is 1 / base; a 1.5 floor keeps it at most 2/3.
-# This relative gap does not guarantee distinct prices after rounding.
-_TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_MIN_BASE: Final[float] = 1.5
+
+def _fibonacci_extension_stage_fractions(partial_stage_count: int) -> tuple[float, ...]:
+    """Stage ``k`` of ``n`` uses 1 / base ** (n - k), i.e. the ``n`` largest
+    Fibonacci retracement ratios (0.618, 0.382, 0.236, ...)."""
+    base = _TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_BASE
+    return tuple(base ** -(partial_stage_count - stage) for stage in range(partial_stage_count))
+
+
+def _equal_division_stage_fractions(partial_stage_count: int) -> tuple[float, ...]:
+    """``n`` equal spacings across the full move: k / (n + 1) for k in 1..n."""
+    return tuple((stage + 1) / (partial_stage_count + 1) for stage in range(partial_stage_count))
+
+
+def _gann_octaves_stage_fractions(partial_stage_count: int) -> tuple[float, ...]:
+    """The ``n`` Gann octave/third levels closest to the full move (at most nine)."""
+    if partial_stage_count > len(_GANN_OCTAVE_LEVELS):
+        raise ValueError(
+            f"Invalid partial_stage_count value {partial_stage_count}: "
+            f"series {TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_SERIES[2]!r} "
+            f"defines {len(_GANN_OCTAVE_LEVELS)} rungs"
+        )
+    return _GANN_OCTAVE_LEVELS[-partial_stage_count:] if partial_stage_count else ()
 
 
 @lru_cache(maxsize=_CACHE_MAXSIZE_SMALL)
 def get_take_profit_stage_natr_multiplier_fractions(
     series: str, partial_stage_count: int
 ) -> tuple[float, ...]:
-    """Return ascending reciprocal-extension fractions for partial take-profit targets.
+    """Return ascending fractions of the full take-profit distance for partial targets.
 
-    Stage ``k`` of ``n`` uses ``1 / base ** (n - k)``. Each fraction scales
-    the full take-profit distance and remains strictly below the independent
-    final fraction ``1.0``.
+    Each series places its ``partial_stage_count`` rungs strictly inside the full
+    distance; the strategy appends the independent final fraction ``1.0``.
     """
-    base = _TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_BASES.get(series)
-    if base is None:
+    if partial_stage_count < 0:
+        raise ValueError(f"Invalid partial_stage_count value {partial_stage_count}: must be >= 0")
+    stage_fractions = {
+        # 0 - "fibonacci_extensions"
+        TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_SERIES[0]: _fibonacci_extension_stage_fractions,
+        # 1 - "equal_division"
+        TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_SERIES[1]: _equal_division_stage_fractions,
+        # 2 - "gann_octaves"
+        TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_SERIES[2]: _gann_octaves_stage_fractions,
+    }
+    handler = stage_fractions.get(series)
+    if handler is None:
         raise ValueError(
             enum_error_message(
                 "take_profit_stage_natr_multiplier_fraction_series",
@@ -1095,20 +1131,10 @@ def get_take_profit_stage_natr_multiplier_fractions(
                 TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_SERIES,
             )
         )
-    if partial_stage_count < 0:
-        raise ValueError(f"Invalid partial_stage_count value {partial_stage_count}: must be >= 0")
-    if base < _TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_MIN_BASE:
-        raise ValueError(
-            f"Invalid base value {base!r} for series {series!r}: "
-            f"must be >= {_TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_MIN_BASE}"
-        )
-
-    fractions = tuple(
-        base ** -(partial_stage_count - stage) for stage in range(partial_stage_count)
-    )
+    fractions = handler(partial_stage_count)
     if any(fraction <= 0.0 for fraction in fractions):
-        # Only reachable by denormal underflow: the base floor above guarantees
-        # ``base > 1``, so no rung can reach or exceed ``1.0``.
+        # Defensive: an unbounded rung count can underflow a rung to zero
+        # (fibonacci_extensions, where base ** n overflows around n ~= 1549).
         raise ValueError(
             f"Invalid partial_stage_count value {partial_stage_count!r} for series {series!r}: "
             "NATR multiplier fractions must be > 0 (underflow to zero)"
