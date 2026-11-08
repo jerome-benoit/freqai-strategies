@@ -1065,8 +1065,8 @@ TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_SERIES: Final[
     "gann_octaves",
 )
 
-# Series place partial targets strictly inside the full take-profit distance;
-# they never extend it. The strategy appends the independent final fraction
+# Series place partial targets strictly inside the full take-profit distance.
+# The strategy appends the independent final fraction
 # ``1.0`` to the generated partial-target ladder. Each series is dispatched by
 # its index into TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_SERIES.
 # The Fibonacci retracement base (the golden ratio): the closest partial
