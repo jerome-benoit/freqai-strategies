@@ -444,7 +444,7 @@ class QuickAdapterV3(IStrategy):
     def exit_stage_natr_multiplier_fractions(self) -> dict[int, float]:
         """Target distance of each stage as a fraction of the full distance.
 
-        Partial rungs follow the configured reciprocal-extension series; the
+        Partial rungs follow the configured fraction series; the
         final rung sits at the full distance.
         """
         partial_stages = QuickAdapterV3.partial_exit_stages()

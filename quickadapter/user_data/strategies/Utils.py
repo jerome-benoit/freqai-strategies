@@ -1053,14 +1053,14 @@ TRADE_NATR_METHODS: Final[tuple[TradeNatrMethod, ...]] = (
 
 
 TakeProfitStageNatrMultiplierFractionSeries = Literal[
-    "fibonacci_extensions",
+    "fibonacci_retracements",
     "equal_division",
     "gann_octaves",
 ]
 TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_SERIES: Final[
     tuple[TakeProfitStageNatrMultiplierFractionSeries, ...]
 ] = (
-    "fibonacci_extensions",
+    "fibonacci_retracements",
     "equal_division",
     "gann_octaves",
 )
@@ -1071,7 +1071,7 @@ TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_SERIES: Final[
 # its index into TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_SERIES.
 # The Fibonacci retracement base (the golden ratio): the closest partial
 # fraction is 1 / base = 0.618, at most 2/3, keeping rungs inside the move.
-_TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_BASE: Final[float] = (1.0 + math.sqrt(5.0)) / 2.0
+_FIBONACCI_RETRACEMENT_BASE: Final[float] = (1.0 + math.sqrt(5.0)) / 2.0
 # Gann octave (``i / 8``) and third (``1/3``, ``2/3``) levels strictly inside the
 # full move, ascending; the series takes the levels closest to the full distance,
 # so it defines at most nine partial rungs.
@@ -1080,10 +1080,11 @@ _GANN_OCTAVE_LEVELS: Final[tuple[float, ...]] = tuple(
 )
 
 
-def _fibonacci_extension_stage_fractions(partial_stage_count: int) -> tuple[float, ...]:
+def _fibonacci_retracement_stage_fractions(partial_stage_count: int) -> tuple[float, ...]:
     """Stage ``k`` of ``n`` uses 1 / base ** (n - k), i.e. the ``n`` largest
-    Fibonacci retracement ratios (0.618, 0.382, 0.236, ...)."""
-    base = _TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_BASE
+    reciprocal powers of the golden ratio; the first three are the canonical
+    Fibonacci retracement ratios (0.618, 0.382, 0.236)."""
+    base = _FIBONACCI_RETRACEMENT_BASE
     return tuple(base ** -(partial_stage_count - stage) for stage in range(partial_stage_count))
 
 
@@ -1114,9 +1115,11 @@ def get_take_profit_stage_natr_multiplier_fractions(
     """
     if partial_stage_count < 0:
         raise ValueError(f"Invalid partial_stage_count value {partial_stage_count}: must be >= 0")
-    stage_fractions = {
-        # 0 - "fibonacci_extensions"
-        TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_SERIES[0]: _fibonacci_extension_stage_fractions,
+    stage_fractions: dict[str, Callable[[int], tuple[float, ...]]] = {
+        # 0 - "fibonacci_retracements"
+        TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_SERIES[
+            0
+        ]: _fibonacci_retracement_stage_fractions,
         # 1 - "equal_division"
         TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_SERIES[1]: _equal_division_stage_fractions,
         # 2 - "gann_octaves"
@@ -1134,7 +1137,7 @@ def get_take_profit_stage_natr_multiplier_fractions(
     fractions = handler(partial_stage_count)
     if any(fraction <= 0.0 for fraction in fractions):
         # Defensive: an unbounded rung count can underflow a rung to zero
-        # (fibonacci_extensions, where base ** n overflows around n ~= 1549).
+        # (fibonacci_retracements, where base ** -(n-k) underflows to zero at n = 1549).
         raise ValueError(
             f"Invalid partial_stage_count value {partial_stage_count!r} for series {series!r}: "
             "NATR multiplier fractions must be > 0 (underflow to zero)"

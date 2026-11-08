@@ -1603,523 +1603,523 @@
     },
     {
       "endCharacter": 98,
-      "endLine": 1765,
+      "endLine": 1768,
       "file": "quickadapter/user_data/strategies/Utils.py",
       "message": "Type \"bool | bool_\" is not assignable to return type \"bool\"\n  Type \"bool | bool_\" is not assignable to type \"bool\"\n    \"numpy.bool[builtins.bool]\" is not assignable to \"bool\"",
       "rule": "reportReturnType",
       "severity": "error",
       "startCharacter": 15,
-      "startLine": 1765
+      "startLine": 1768
     },
     {
       "endCharacter": 33,
-      "endLine": 1799,
+      "endLine": 1802,
       "file": "quickadapter/user_data/strategies/Utils.py",
       "message": "Argument of type \"ScalarOrNA | bool_ | Period | Interval[Any]\" cannot be assigned to parameter \"x\" of type \"ConvertibleToInt\" in function \"__new__\"\n  Type \"ScalarOrNA | bool_ | Period | Interval[Any]\" is not assignable to type \"ConvertibleToInt\"\n    Type \"NAType\" is not assignable to type \"ConvertibleToInt\"\n      \"NAType\" is not assignable to \"str\"\n      \"NAType\" is incompatible with protocol \"Buffer\"\n        \"__buffer__\" is not present\n      \"NAType\" is incompatible with protocol \"SupportsInt\"\n        \"__int__\" is not present\n      \"NAType\" is incompatible with protocol \"SupportsIndex\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 20,
-      "startLine": 1799
+      "startLine": 1802
     },
     {
       "endCharacter": 33,
-      "endLine": 1799,
+      "endLine": 1802,
       "file": "quickadapter/user_data/strategies/Utils.py",
       "message": "Argument of type \"ScalarOrNA | bool_ | Period | Interval[Any]\" cannot be assigned to parameter \"x\" of type \"ConvertibleToInt\" in function \"__new__\"\n  Type \"ScalarOrNA | bool_ | Period | Interval[Any]\" is not assignable to type \"ConvertibleToInt\"\n    Type \"NAType\" is not assignable to type \"ConvertibleToInt\"\n      \"NAType\" is not assignable to \"str\"\n      \"NAType\" is incompatible with protocol \"Buffer\"\n        \"__buffer__\" is not present\n      \"NAType\" is incompatible with protocol \"SupportsInt\"\n        \"__int__\" is not present\n      \"NAType\" is incompatible with protocol \"SupportsIndex\"\n  ...",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 20,
-      "startLine": 1799
+      "startLine": 1802
     },
     {
       "endCharacter": 23,
-      "endLine": 1811,
+      "endLine": 1814,
       "file": "quickadapter/user_data/strategies/Utils.py",
       "message": "Type \"float\" is not assignable to return type \"T@get_distance\"\n  Type \"float\" is not assignable to type \"T@get_distance\"",
       "rule": "reportReturnType",
       "severity": "error",
       "startCharacter": 11,
-      "startLine": 1811
+      "startLine": 1814
     },
     {
       "endCharacter": 83,
-      "endLine": 2664,
+      "endLine": 2667,
       "file": "quickadapter/user_data/strategies/Utils.py",
       "message": "Argument of type \"str\" cannot be assigned to parameter \"key\" of type \"CombinedMetric\" in function \"__getitem__\"\n  Type \"str\" is not assignable to type \"CombinedMetric\"\n    \"str\" is not assignable to type \"Literal['amplitude']\"\n    \"str\" is not assignable to type \"Literal['amplitude_threshold_ratio']\"\n    \"str\" is not assignable to type \"Literal['volume_rate']\"\n    \"str\" is not assignable to type \"Literal['speed']\"\n    \"str\" is not assignable to type \"Literal['efficiency_ratio']\"\n    \"str\" is not assignable to type \"Literal['volume_weighted_efficiency_ratio']\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 58,
-      "startLine": 2664
+      "startLine": 2667
     },
     {
       "endCharacter": 38,
-      "endLine": 3554,
+      "endLine": 3557,
       "file": "quickadapter/user_data/strategies/Utils.py",
       "message": "Cannot access attribute \"__func__\" for class \"FunctionType\"\n  Attribute \"__func__\" is unknown",
       "rule": "reportFunctionMemberAccess",
       "severity": "error",
       "startCharacter": 30,
-      "startLine": 3554
+      "startLine": 3557
     },
     {
       "endCharacter": 34,
-      "endLine": 3556,
+      "endLine": 3559,
       "file": "quickadapter/user_data/strategies/Utils.py",
       "message": "Cannot access attribute \"__func__\" for class \"FunctionType\"\n  Attribute \"__func__\" is unknown",
       "rule": "reportFunctionMemberAccess",
       "severity": "error",
       "startCharacter": 26,
-      "startLine": 3556
+      "startLine": 3559
     },
     {
       "endCharacter": 55,
-      "endLine": 3786,
+      "endLine": 3789,
       "file": "quickadapter/user_data/strategies/Utils.py",
       "message": "\"rolling\" is not a known attribute of \"None\"",
       "rule": "reportOptionalMemberAccess",
       "severity": "error",
       "startCharacter": 48,
-      "startLine": 3786
+      "startLine": 3789
     },
     {
       "endCharacter": 38,
-      "endLine": 3811,
+      "endLine": 3814,
       "file": "quickadapter/user_data/strategies/Utils.py",
       "message": "\"rolling\" is not a known attribute of \"None\"",
       "rule": "reportOptionalMemberAccess",
       "severity": "error",
       "startCharacter": 31,
-      "startLine": 3811
+      "startLine": 3814
     },
     {
       "endCharacter": 55,
-      "endLine": 3837,
+      "endLine": 3840,
       "file": "quickadapter/user_data/strategies/Utils.py",
       "message": "\"rolling\" is not a known attribute of \"None\"",
       "rule": "reportOptionalMemberAccess",
       "severity": "error",
       "startCharacter": 48,
-      "startLine": 3837
+      "startLine": 3840
     },
     {
       "endCharacter": 56,
-      "endLine": 3838,
+      "endLine": 3841,
       "file": "quickadapter/user_data/strategies/Utils.py",
       "message": "\"rolling\" is not a known attribute of \"None\"",
       "rule": "reportOptionalMemberAccess",
       "severity": "error",
       "startCharacter": 49,
-      "startLine": 3838
+      "startLine": 3841
     },
     {
       "endCharacter": 33,
-      "endLine": 3910,
+      "endLine": 3913,
       "file": "quickadapter/user_data/strategies/Utils.py",
       "message": "Argument of type \"Series[Any] | NDArray[floating[Any]]\" cannot be assigned to parameter \"series\" of type \"Series[Any]\" in function \"calculate_zero_lag\"\n  Type \"Series[Any] | NDArray[floating[Any]]\" is not assignable to type \"Series[Any]\"\n    \"ndarray[_AnyShape, dtype[floating[Any]]]\" is not assignable to \"Series[Any]\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 27,
-      "startLine": 3910
+      "startLine": 3913
     },
     {
       "endCharacter": 69,
-      "endLine": 3910,
+      "endLine": 3913,
       "file": "quickadapter/user_data/strategies/Utils.py",
       "message": "Expected 1 more positional argument",
       "rule": "reportCallIssue",
       "severity": "error",
       "startCharacter": 59,
-      "startLine": 3910
+      "startLine": 3913
     },
     {
       "endCharacter": 40,
-      "endLine": 3977,
+      "endLine": 3980,
       "file": "quickadapter/user_data/strategies/Utils.py",
       "message": "Argument of type \"Series[Any] | None\" cannot be assigned to parameter \"series\" of type \"Series[Any]\" in function \"calculate_zero_lag\"\n  Type \"Series[Any] | None\" is not assignable to type \"Series[Any]\"\n    \"None\" is not assignable to \"Series[Any]\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 35,
-      "startLine": 3977
+      "startLine": 3980
     },
     {
       "endCharacter": 38,
-      "endLine": 3978,
+      "endLine": 3981,
       "file": "quickadapter/user_data/strategies/Utils.py",
       "message": "Argument of type \"Series[Any] | None\" cannot be assigned to parameter \"series\" of type \"Series[Any]\" in function \"calculate_zero_lag\"\n  Type \"Series[Any] | None\" is not assignable to type \"Series[Any]\"\n    \"None\" is not assignable to \"Series[Any]\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 34,
-      "startLine": 3978
+      "startLine": 3981
     },
     {
       "endCharacter": 42,
-      "endLine": 3979,
+      "endLine": 3982,
       "file": "quickadapter/user_data/strategies/Utils.py",
       "message": "Argument of type \"Series[Any] | None\" cannot be assigned to parameter \"series\" of type \"Series[Any]\" in function \"calculate_zero_lag\"\n  Type \"Series[Any] | None\" is not assignable to type \"Series[Any]\"\n    \"None\" is not assignable to \"Series[Any]\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 36,
-      "startLine": 3979
+      "startLine": 3982
     },
     {
       "endCharacter": 45,
-      "endLine": 3981,
+      "endLine": 3984,
       "file": "quickadapter/user_data/strategies/Utils.py",
       "message": "\"index\" is not a known attribute of \"None\"",
       "rule": "reportOptionalMemberAccess",
       "severity": "error",
       "startCharacter": 40,
-      "startLine": 3981
+      "startLine": 3984
     },
     {
       "endCharacter": 33,
-      "endLine": 3983,
+      "endLine": 3986,
       "file": "quickadapter/user_data/strategies/Utils.py",
       "message": "\"iloc\" is not a known attribute of \"None\"",
       "rule": "reportOptionalMemberAccess",
       "severity": "error",
       "startCharacter": 29,
-      "startLine": 3983
+      "startLine": 3986
     },
     {
       "endCharacter": 31,
-      "endLine": 3984,
+      "endLine": 3987,
       "file": "quickadapter/user_data/strategies/Utils.py",
       "message": "\"iloc\" is not a known attribute of \"None\"",
       "rule": "reportOptionalMemberAccess",
       "severity": "error",
       "startCharacter": 27,
-      "startLine": 3984
+      "startLine": 3987
     },
     {
       "endCharacter": 48,
-      "endLine": 3989,
+      "endLine": 3992,
       "file": "quickadapter/user_data/strategies/Utils.py",
       "message": "\"index\" is not a known attribute of \"None\"",
       "rule": "reportOptionalMemberAccess",
       "severity": "error",
       "startCharacter": 43,
-      "startLine": 3989
+      "startLine": 3992
     },
     {
       "endCharacter": 40,
-      "endLine": 3990,
+      "endLine": 3993,
       "file": "quickadapter/user_data/strategies/Utils.py",
       "message": "\"iloc\" is not a known attribute of \"None\"",
       "rule": "reportOptionalMemberAccess",
       "severity": "error",
       "startCharacter": 36,
-      "startLine": 3990
+      "startLine": 3993
     },
     {
       "endCharacter": 59,
-      "endLine": 3992,
+      "endLine": 3995,
       "file": "quickadapter/user_data/strategies/Utils.py",
       "message": "Cannot access attribute \"iloc\" for class \"NDArray[Any]\"\n  Attribute \"iloc\" is unknown",
       "rule": "reportAttributeAccessIssue",
       "severity": "error",
       "startCharacter": 55,
-      "startLine": 3992
+      "startLine": 3995
     },
     {
       "endCharacter": 34,
-      "endLine": 3994,
+      "endLine": 3997,
       "file": "quickadapter/user_data/strategies/Utils.py",
       "message": "Cannot access attribute \"iloc\" for class \"NDArray[Any]\"\n  Attribute \"iloc\" is unknown",
       "rule": "reportAttributeAccessIssue",
       "severity": "error",
       "startCharacter": 30,
-      "startLine": 3994
+      "startLine": 3997
     },
     {
       "endCharacter": 51,
-      "endLine": 3994,
+      "endLine": 3997,
       "file": "quickadapter/user_data/strategies/Utils.py",
       "message": "\"iloc\" is not a known attribute of \"None\"",
       "rule": "reportOptionalMemberAccess",
       "severity": "error",
       "startCharacter": 47,
-      "startLine": 3994
+      "startLine": 3997
     },
     {
       "endCharacter": 72,
-      "endLine": 3994,
+      "endLine": 3997,
       "file": "quickadapter/user_data/strategies/Utils.py",
       "message": "Cannot access attribute \"iloc\" for class \"NDArray[Any]\"\n  Attribute \"iloc\" is unknown",
       "rule": "reportAttributeAccessIssue",
       "severity": "error",
       "startCharacter": 68,
-      "startLine": 3994
+      "startLine": 3997
     },
     {
       "endCharacter": 40,
-      "endLine": 4061,
+      "endLine": 4064,
       "file": "quickadapter/user_data/strategies/Utils.py",
       "message": "Type \"(Series[Any] | NDArray[floating[Any]], int) -> (Series[Any] | NDArray[floating[Any]])\" is not assignable to declared type \"(series: Unknown, timeperiod: Unknown) -> Series[Any]\"\n  Type \"(Series[Any] | NDArray[floating[Any]], int) -> (Series[Any] | NDArray[floating[Any]])\" is not assignable to type \"(series: Unknown, timeperiod: Unknown) -> Series[Any]\"\n    Missing keyword parameter \"series\"\n    Missing keyword parameter \"timeperiod\"\n      Position-only parameter mismatch; parameter \"series\" is not position-only\n      Position-only parameter mismatch; parameter \"timeperiod\" is not position-only\n      Position-only parameter mismatch; expected 2 but received 0\n      Function return type \"Series[Any] | NDArray[floating[Any]]\" is incompatible with type \"Series[Any]\"\n        Type \"Series[Any] | NDArray[floating[Any]]\" is not assignable to type \"Series[Any]\"\n  ...",
       "rule": "reportAssignmentType",
       "severity": "error",
       "startCharacter": 20,
-      "startLine": 4061
+      "startLine": 4064
     },
     {
       "endCharacter": 33,
-      "endLine": 4063,
+      "endLine": 4066,
       "file": "quickadapter/user_data/strategies/Utils.py",
       "message": "Type \"(Series[Any] | NDArray[floating[Any]], int) -> (Series[Any] | NDArray[floating[Any]])\" is not assignable to declared type \"(series: Unknown, timeperiod: Unknown) -> Series[Any]\"\n  Type \"(Series[Any] | NDArray[floating[Any]], int) -> (Series[Any] | NDArray[floating[Any]])\" is not assignable to type \"(series: Unknown, timeperiod: Unknown) -> Series[Any]\"\n    Missing keyword parameter \"series\"\n    Missing keyword parameter \"timeperiod\"\n      Position-only parameter mismatch; parameter \"series\" is not position-only\n      Position-only parameter mismatch; parameter \"timeperiod\" is not position-only\n      Position-only parameter mismatch; expected 2 but received 0\n      Function return type \"Series[Any] | NDArray[floating[Any]]\" is incompatible with type \"Series[Any]\"\n        Type \"Series[Any] | NDArray[floating[Any]]\" is not assignable to type \"Series[Any]\"\n  ...",
       "rule": "reportAssignmentType",
       "severity": "error",
       "startCharacter": 16,
-      "startLine": 4063
+      "startLine": 4066
     },
     {
       "endCharacter": 35,
-      "endLine": 4109,
+      "endLine": 4112,
       "file": "quickadapter/user_data/strategies/Utils.py",
       "message": "\"to_numpy\" is not a known attribute of \"None\"",
       "rule": "reportOptionalMemberAccess",
       "severity": "error",
       "startCharacter": 27,
-      "startLine": 4109
+      "startLine": 4112
     },
     {
       "endCharacter": 33,
-      "endLine": 4110,
+      "endLine": 4113,
       "file": "quickadapter/user_data/strategies/Utils.py",
       "message": "\"to_numpy\" is not a known attribute of \"None\"",
       "rule": "reportOptionalMemberAccess",
       "severity": "error",
       "startCharacter": 25,
-      "startLine": 4110
+      "startLine": 4113
     },
     {
       "endCharacter": 37,
-      "endLine": 4227,
+      "endLine": 4230,
       "file": "quickadapter/user_data/strategies/Utils.py",
       "message": "\"to_numpy\" is not a known attribute of \"None\"",
       "rule": "reportOptionalMemberAccess",
       "severity": "error",
       "startCharacter": 29,
-      "startLine": 4227
+      "startLine": 4230
     },
     {
       "endCharacter": 35,
-      "endLine": 4228,
+      "endLine": 4231,
       "file": "quickadapter/user_data/strategies/Utils.py",
       "message": "\"to_numpy\" is not a known attribute of \"None\"",
       "rule": "reportOptionalMemberAccess",
       "severity": "error",
       "startCharacter": 27,
-      "startLine": 4228
+      "startLine": 4231
     },
     {
       "endCharacter": 33,
-      "endLine": 4229,
+      "endLine": 4232,
       "file": "quickadapter/user_data/strategies/Utils.py",
       "message": "\"to_numpy\" is not a known attribute of \"None\"",
       "rule": "reportOptionalMemberAccess",
       "severity": "error",
       "startCharacter": 25,
-      "startLine": 4229
+      "startLine": 4232
     },
     {
       "endCharacter": 39,
-      "endLine": 4249,
+      "endLine": 4252,
       "file": "quickadapter/user_data/strategies/Utils.py",
       "message": "\"to_numpy\" is not a known attribute of \"None\"",
       "rule": "reportOptionalMemberAccess",
       "severity": "error",
       "startCharacter": 31,
-      "startLine": 4249
+      "startLine": 4252
     },
     {
       "endCharacter": 92,
-      "endLine": 4608,
+      "endLine": 4611,
       "file": "quickadapter/user_data/strategies/Utils.py",
       "message": "Type \"bool_ | bool\" is not assignable to return type \"bool\"\n  Type \"bool_ | bool\" is not assignable to type \"bool\"\n    \"numpy.bool[builtins.bool]\" is not assignable to \"bool\"",
       "rule": "reportReturnType",
       "severity": "error",
       "startCharacter": 15,
-      "startLine": 4608
+      "startLine": 4611
     },
     {
       "endCharacter": 85,
-      "endLine": 5009,
+      "endLine": 5012,
       "file": "quickadapter/user_data/strategies/Utils.py",
       "message": "Argument of type \"XGBoostPruningCallback\" cannot be assigned to parameter \"object\" of type \"RegressorCallback\" in function \"append\"\n  Type \"XGBoostPruningCallback\" is not assignable to type \"RegressorCallback\"\n    Type \"XGBoostPruningCallback\" is not assignable to type \"(...) -> Any\"\n    \"XGBoostPruningCallback\" is not assignable to \"TrainingCallback\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 16,
-      "startLine": 5009
+      "startLine": 5012
     },
     {
       "endCharacter": 29,
-      "endLine": 5052,
+      "endLine": 5055,
       "file": "quickadapter/user_data/strategies/Utils.py",
       "message": "Argument of type \"list[tuple[DataFrame, DataFrame]] | None\" cannot be assigned to parameter \"eval_set\" of type \"List[_LGBM_ScikitValidSet] | None\" in function \"fit\"\n  Type \"list[tuple[DataFrame, DataFrame]] | None\" is not assignable to type \"List[_LGBM_ScikitValidSet] | None\"\n    Type \"list[tuple[DataFrame, DataFrame]]\" is not assignable to type \"List[_LGBM_ScikitValidSet] | None\"\n      \"list[tuple[DataFrame, DataFrame]]\" is not assignable to \"List[_LGBM_ScikitValidSet]\"\n        Type parameter \"_T@list\" is invariant, but \"tuple[DataFrame, DataFrame]\" is not the same as \"_LGBM_ScikitValidSet\"\n        Consider switching from \"list\" to \"Sequence\" which is covariant\n      \"list[tuple[DataFrame, DataFrame]]\" is not assignable to \"None\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 21,
-      "startLine": 5052
+      "startLine": 5055
     },
     {
       "endCharacter": 43,
-      "endLine": 5053,
+      "endLine": 5056,
       "file": "quickadapter/user_data/strategies/Utils.py",
       "message": "Argument of type \"list[NDArray[floating[Any]]] | None\" cannot be assigned to parameter \"eval_sample_weight\" of type \"List[_LGBM_WeightType] | None\" in function \"fit\"\n  Type \"list[NDArray[floating[Any]]] | None\" is not assignable to type \"List[_LGBM_WeightType] | None\"\n    Type \"list[NDArray[floating[Any]]]\" is not assignable to type \"List[_LGBM_WeightType] | None\"\n      \"list[NDArray[floating[Any]]]\" is not assignable to \"List[_LGBM_WeightType]\"\n        Type parameter \"_T@list\" is invariant, but \"NDArray[floating[Any]]\" is not the same as \"_LGBM_WeightType\"\n        Consider switching from \"list\" to \"Sequence\" which is covariant\n      \"list[NDArray[floating[Any]]]\" is not assignable to \"None\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 31,
-      "startLine": 5053
+      "startLine": 5056
     },
     {
       "endCharacter": 62,
-      "endLine": 5056,
+      "endLine": 5059,
       "file": "quickadapter/user_data/strategies/Utils.py",
       "message": "Argument of type \"list[RegressorCallback] | None\" cannot be assigned to parameter \"callbacks\" of type \"List[(...) -> Unknown] | None\" in function \"fit\"\n  Type \"list[RegressorCallback] | None\" is not assignable to type \"List[(...) -> Unknown] | None\"\n    Type \"list[RegressorCallback]\" is not assignable to type \"List[(...) -> Unknown] | None\"\n      \"list[RegressorCallback]\" is not assignable to \"List[(...) -> Unknown]\"\n        Type parameter \"_T@list\" is invariant, but \"RegressorCallback\" is not the same as \"(...) -> Unknown\"\n        Consider switching from \"list\" to \"Sequence\" which is covariant\n      \"list[RegressorCallback]\" is not assignable to \"None\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 22,
-      "startLine": 5056
+      "startLine": 5059
     },
     {
       "endCharacter": 35,
-      "endLine": 5078,
+      "endLine": 5081,
       "file": "quickadapter/user_data/strategies/Utils.py",
       "message": "Object of type \"None\" is not subscriptable",
       "rule": "reportOptionalSubscript",
       "severity": "error",
       "startCharacter": 27,
-      "startLine": 5078
+      "startLine": 5081
     },
     {
       "endCharacter": 35,
-      "endLine": 5124,
+      "endLine": 5127,
       "file": "quickadapter/user_data/strategies/Utils.py",
       "message": "Object of type \"None\" is not subscriptable",
       "rule": "reportOptionalSubscript",
       "severity": "error",
       "startCharacter": 27,
-      "startLine": 5124
+      "startLine": 5127
     },
     {
       "endCharacter": 49,
-      "endLine": 5194,
+      "endLine": 5197,
       "file": "quickadapter/user_data/strategies/Utils.py",
       "message": "Argument of type \"CatBoostPruningCallback\" cannot be assigned to parameter \"object\" of type \"RegressorCallback\" in function \"append\"\n  Type \"CatBoostPruningCallback\" is not assignable to type \"RegressorCallback\"\n    Type \"CatBoostPruningCallback\" is not assignable to type \"(...) -> Any\"\n    \"CatBoostPruningCallback\" is not assignable to \"TrainingCallback\"",
       "rule": "reportArgumentType",
       "severity": "error",
       "startCharacter": 33,
-      "startLine": 5194
+      "startLine": 5197
     },
     {
       "endCharacter": 75,
-      "endLine": 5437,
+      "endLine": 5440,
       "file": "quickadapter/user_data/strategies/Utils.py",
       "message": "Operator \"<=\" not supported for \"None\"",
       "rule": "reportOptionalOperand",
       "severity": "error",
       "startCharacter": 54,
-      "startLine": 5437
+      "startLine": 5440
     },
     {
       "endCharacter": 23,
-      "endLine": 5600,
+      "endLine": 5603,
       "file": "quickadapter/user_data/strategies/Utils.py",
       "message": "\"best_params\" is possibly unbound",
       "rule": "reportPossiblyUnboundVariable",
       "severity": "error",
       "startCharacter": 12,
-      "startLine": 5600
+      "startLine": 5603
     },
     {
       "endCharacter": 38,
-      "endLine": 5607,
+      "endLine": 5610,
       "file": "quickadapter/user_data/strategies/Utils.py",
       "message": "\"best_params\" is possibly unbound",
       "rule": "reportPossiblyUnboundVariable",
       "severity": "error",
       "startCharacter": 27,
-      "startLine": 5607
+      "startLine": 5610
     },
     {
       "endCharacter": 22,
-      "endLine": 5619,
+      "endLine": 5622,
       "file": "quickadapter/user_data/strategies/Utils.py",
       "message": "\"best_params\" is possibly unbound",
       "rule": "reportPossiblyUnboundVariable",
       "severity": "error",
       "startCharacter": 11,
-      "startLine": 5619
+      "startLine": 5622
     },
     {
       "endCharacter": 22,
-      "endLine": 5777,
+      "endLine": 5780,
       "file": "quickadapter/user_data/strategies/Utils.py",
       "message": "Declaration \"default_ranges\" is obscured by a declaration of the same name",
       "rule": "reportRedeclaration",
       "severity": "error",
       "startCharacter": 8,
-      "startLine": 5777
+      "startLine": 5780
     },
     {
       "endCharacter": 14,
-      "endLine": 5813,
+      "endLine": 5816,
       "file": "quickadapter/user_data/strategies/Utils.py",
       "message": "Declaration \"params\" is obscured by a declaration of the same name",
       "rule": "reportRedeclaration",
       "severity": "error",
       "startCharacter": 8,
-      "startLine": 5813
+      "startLine": 5816
     },
     {
       "endCharacter": 22,
-      "endLine": 5897,
+      "endLine": 5900,
       "file": "quickadapter/user_data/strategies/Utils.py",
       "message": "Declaration \"default_ranges\" is obscured by a declaration of the same name",
       "rule": "reportRedeclaration",
       "severity": "error",
       "startCharacter": 8,
-      "startLine": 5897
+      "startLine": 5900
     },
     {
       "endCharacter": 14,
-      "endLine": 5931,
+      "endLine": 5934,
       "file": "quickadapter/user_data/strategies/Utils.py",
       "message": "Declaration \"params\" is obscured by a declaration of the same name",
       "rule": "reportRedeclaration",
       "severity": "error",
       "startCharacter": 8,
-      "startLine": 5931
+      "startLine": 5934
     },
     {
       "endCharacter": 22,
-      "endLine": 6002,
+      "endLine": 6005,
       "file": "quickadapter/user_data/strategies/Utils.py",
       "message": "Declaration \"default_ranges\" is obscured by a declaration of the same name",
       "rule": "reportRedeclaration",
       "severity": "error",
       "startCharacter": 8,
-      "startLine": 6002
+      "startLine": 6005
     },
     {
       "endCharacter": 22,
-      "endLine": 6103,
+      "endLine": 6106,
       "file": "quickadapter/user_data/strategies/Utils.py",
       "message": "Declaration \"default_ranges\" is obscured by a declaration of the same name",
       "rule": "reportRedeclaration",
       "severity": "error",
       "startCharacter": 8,
-      "startLine": 6103
+      "startLine": 6106
     },
     {
       "endCharacter": 26,
-      "endLine": 6186,
+      "endLine": 6189,
       "file": "quickadapter/user_data/strategies/Utils.py",
       "message": "Declaration \"default_ranges\" is obscured by a declaration of the same name",
       "rule": "reportRedeclaration",
       "severity": "error",
       "startCharacter": 12,
-      "startLine": 6186
+      "startLine": 6189
     }
   ],
   "filesAnalyzed": 6,
