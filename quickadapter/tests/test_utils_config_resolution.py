@@ -32,6 +32,7 @@ CANONICAL_PROTECTIONS: dict[str, Any] = {
     "stoploss": {"enabled": True},
 }
 CANONICAL_REVERSAL: dict[str, Any] = {
+    "enabled": True,
     "lookback_period_candles": 0,
     "decay_fraction": 0.5,
     "min_natr_multiplier_fraction": 0.0095,
@@ -417,6 +418,43 @@ class UtilsConfigResolutionTest(QaTestCase):
         self.assertEqual(
             ["Invalid reversal_confirmation value 'x': must be a mapping, using defaults"], sink
         )
+
+    def test_reversal_entry_switch_requires_a_boolean(self) -> None:
+        for enabled in (True, False):
+            with self.subTest(enabled=enabled):
+                with recorded_warnings() as (logger, sink):
+                    resolved = get_reversal_confirmation_config({"enabled": enabled}, logger)
+                self.assertIs(resolved["enabled"], enabled)
+                self.assertEqual([], sink)
+
+        for rejected in (0, 1, "false", None, np.bool_(False)):
+            with self.subTest(rejected=rejected):
+                with recorded_warnings() as (logger, sink):
+                    resolved = get_reversal_confirmation_config({"enabled": rejected}, logger)
+                self.assertIs(resolved["enabled"], True)
+                self.assertTrue(any("reversal_confirmation" in message for message in sink))
+
+    def test_disabled_entry_reversal_still_normalizes_numeric_constraints(self) -> None:
+        with recorded_warnings() as (logger, _):
+            resolved = get_reversal_confirmation_config(
+                {
+                    "enabled": False,
+                    "lookback_period_candles": -1,
+                    "decay_fraction": 0,
+                    "min_natr_multiplier_fraction": np.nan,
+                    "max_natr_multiplier_fraction": 2,
+                },
+                logger,
+            )
+        self.assertIs(resolved["enabled"], False)
+        self.assertGreaterEqual(resolved["lookback_period_candles"], 0)
+        self.assertGreater(resolved["decay_fraction"], 0)
+        self.assertLessEqual(resolved["decay_fraction"], 1)
+        self.assertGreaterEqual(resolved["min_natr_multiplier_fraction"], 0)
+        self.assertLess(
+            resolved["min_natr_multiplier_fraction"], resolved["max_natr_multiplier_fraction"]
+        )
+        self.assertLessEqual(resolved["max_natr_multiplier_fraction"], 1)
 
     def test_reversal_confirmation_scalar_fields_fall_back_with_their_constraints(self) -> None:
         with recorded_warnings() as (logger, sink):

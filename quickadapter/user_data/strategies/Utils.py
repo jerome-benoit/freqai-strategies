@@ -1665,6 +1665,7 @@ def normalize_fit_live_predictions_config(config: dict[str, Any], logger: Logger
 
 
 DEFAULTS_REVERSAL_CONFIRMATION: Final[dict[str, Any]] = {
+    "enabled": True,
     "lookback_period_candles": 0,
     "decay_fraction": 0.5,
     "min_natr_multiplier_fraction": 0.0095,
@@ -1675,6 +1676,7 @@ DEFAULTS_REVERSAL_CONFIRMATION: Final[dict[str, Any]] = {
 # cross-field ordering and per-component fallback, which ``_validate_params``
 # cannot express.
 _REVERSAL_CONFIRMATION_SCALAR_SPECS: Final[dict[str, _ParamSpec]] = {
+    "enabled": _ParamSpec(_BoolValidator()),
     "lookback_period_candles": _ParamSpec(
         _NumericValidator(min_value=0, require_int=True), output_type=int
     ),
@@ -1685,7 +1687,7 @@ _REVERSAL_CONFIRMATION_SCALAR_SPECS: Final[dict[str, _ParamSpec]] = {
 }
 
 
-def get_reversal_confirmation_config(config: Any, logger: Logger) -> dict[str, int | float]:
+def get_reversal_confirmation_config(config: Any, logger: Logger) -> dict[str, bool | int | float]:
     config = as_config_section(config, "reversal_confirmation", logger)
     validated = _validate_params(
         config,
@@ -1715,6 +1717,7 @@ def get_reversal_confirmation_config(config: Any, logger: Logger) -> dict[str, i
     )
 
     return {
+        "enabled": bool(validated["enabled"]),
         "lookback_period_candles": int(validated["lookback_period_candles"]),
         "decay_fraction": float(validated["decay_fraction"]),
         "min_natr_multiplier_fraction": float(min_natr_multiplier_fraction),
