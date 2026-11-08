@@ -14,6 +14,7 @@ from Utils import (
     DEFAULTS_CUSTOM_PROTECTIONS,
     DEFAULTS_EXIT_PRICING,
     DEFAULTS_REVERSAL_CONFIRMATION,
+    TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_SERIES,
     get_causal_mode,
     get_custom_protections_config,
     get_exit_pricing_config,
@@ -121,7 +122,7 @@ class UtilsConfigResolutionTest(QaTestCase):
         self.assertEqual([logging.WARNING], [record.levelno for record in captured.records])
 
     def test_exit_pricing_every_supported_fraction_series_is_preserved(self) -> None:
-        for series in ("fibonacci_extensions", "pi_extensions"):
+        for series in TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_SERIES:
             with self.subTest(series=series):
                 with recorded_warnings() as (logger, sink):
                     resolved = get_exit_pricing_config(

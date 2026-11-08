@@ -221,7 +221,7 @@ class QuickAdapterV3(IStrategy):
     _ANNOTATION_LINE_OFFSET_CANDLES: Final[int] = 10
 
     def version(self) -> str:
-        return "3.13.2"
+        return "3.13.3"
 
     timeframe = "5m"
     timeframe_minutes = timeframe_to_minutes(timeframe)
@@ -444,7 +444,7 @@ class QuickAdapterV3(IStrategy):
     def exit_stage_natr_multiplier_fractions(self) -> dict[int, float]:
         """Target distance of each stage as a fraction of the full distance.
 
-        Partial rungs follow the configured reciprocal-extension series; the
+        Partial rungs follow the configured fraction series; the
         final rung sits at the full distance.
         """
         partial_stages = QuickAdapterV3.partial_exit_stages()

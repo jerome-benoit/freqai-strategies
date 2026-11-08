@@ -559,7 +559,7 @@ class StrategyFeaturesTest(QaTestCase):
         self.assertEqual(model.get_exit_stage_natr_multiplier_fraction(99), 1.0)
         self.assertEqual(model.get_exit_stage_natr_multiplier_fraction(-1), 1.0)
 
-    def test_the_fibonacci_extensions_define_the_default_ladder(self):
+    def test_the_fibonacci_retracements_define_the_default_ladder(self):
         # Frozen reference rungs, not a restatement of the formula: a change of
         # base or of the stage count must fail here. Three partial rungs are
         # phi**-3, phi**-2 and phi**-1, then the full distance.
@@ -594,81 +594,98 @@ class StrategyFeaturesTest(QaTestCase):
 
     def test_the_ladder_is_indexed_by_the_stage_count(self):
         self.assertEqual(
-            len(get_take_profit_stage_natr_multiplier_fractions("fibonacci_extensions", 0)), 0
+            len(get_take_profit_stage_natr_multiplier_fractions("fibonacci_retracements", 0)), 0
         )
         for count in (1, 2, 3, 4, 5):
             with self.subTest(count=count):
                 fractions = get_take_profit_stage_natr_multiplier_fractions(
-                    "fibonacci_extensions", count
+                    "fibonacci_retracements", count
                 )
                 self.assertEqual(len(fractions), count)
                 self.assertEqual(max(fractions), fractions[-1])
 
-    def test_the_pi_extensions_define_the_ladder(self):
+    def test_the_equal_division_defines_the_default_rung_count_ladder(self):
+        # Evenly spaced rungs: with the default three partial rungs, k / 4 for
+        # k in 1..3, then the full distance.
         assert_allclose(
             tuple(
                 strategy(
-                    fraction_series="pi_extensions"
+                    fraction_series="equal_division"
                 ).exit_stage_natr_multiplier_fractions.values()
             ),
-            (0.03225153, 0.10132118, 0.31830989, 1.0),
-            rtol=1e-6,
+            (0.25, 0.5, 0.75, 1.0),
+            rtol=1e-12,
         )
+
+    def test_the_gann_octaves_define_the_default_rung_count_ladder(self):
+        # Gann levels closest to the full move: with the default three partial
+        # rungs, 2/3, 3/4 and 7/8, then the full distance.
+        assert_allclose(
+            tuple(
+                strategy(
+                    fraction_series="gann_octaves"
+                ).exit_stage_natr_multiplier_fractions.values()
+            ),
+            (2.0 / 3.0, 0.75, 0.875, 1.0),
+            rtol=1e-12,
+        )
+
+    def test_gann_octaves_refuses_more_rungs_than_it_defines(self):
+        # Gann defines nine sub-move levels; a tenth partial rung is refused.
+        self.assertEqual(len(get_take_profit_stage_natr_multiplier_fractions("gann_octaves", 9)), 9)
+        with self.assertRaises(ValueError):
+            get_take_profit_stage_natr_multiplier_fractions("gann_octaves", 10)
 
     def test_selecting_a_series_changes_the_stage_distances(self):
         frame = candles([100.0, 100.0, 100.0], natr=[1.0, 4.0, 8.0], multiplier=MULTIPLIER)
         long_trade = trade()
-        fibonacci = strategy(fraction_series="fibonacci_extensions")
-        pi = strategy(fraction_series="pi_extensions")
-        self.assertEqual(pi.take_profit_stage_natr_multiplier_fraction_series, "pi_extensions")
+        fibonacci = strategy(fraction_series="fibonacci_retracements")
+        equal = strategy(fraction_series="equal_division")
+        self.assertEqual(equal.take_profit_stage_natr_multiplier_fraction_series, "equal_division")
         partial_stages = list(QuickAdapterV3.partial_exit_stages())
-        for stage in partial_stages:
-            with self.subTest(stage=stage):
-                fibonacci_distance = fibonacci.get_take_profit_target(frame, long_trade, stage)[1]
-                pi_distance = pi.get_take_profit_target(frame, long_trade, stage)[1]
-                # The larger pi extension base yields smaller reciprocal fractions.
-                self.assertLess(pi_distance, fibonacci_distance)
-        # The final distance is independent of the partial extension series.
+        fibonacci_distances = [
+            fibonacci.get_take_profit_target(frame, long_trade, stage)[1]
+            for stage in partial_stages
+        ]
+        equal_distances = [
+            equal.get_take_profit_target(frame, long_trade, stage)[1] for stage in partial_stages
+        ]
+        # Distinct series price the partial rungs at distinct distances.
+        self.assertNotEqual(fibonacci_distances, equal_distances)
+        # The final distance is independent of the partial series.
         self.assertEqual(
             fibonacci.get_take_profit_target(frame, long_trade, QuickAdapterV3.final_exit_stage()),
-            pi.get_take_profit_target(frame, long_trade, QuickAdapterV3.final_exit_stage()),
+            equal.get_take_profit_target(frame, long_trade, QuickAdapterV3.final_exit_stage()),
         )
 
     def test_fraction_series_validates_names_and_stage_counts(self):
         with self.assertRaises(ValueError):
             get_take_profit_stage_natr_multiplier_fractions("not_a_series", 3)
         self.assertEqual(
-            get_take_profit_stage_natr_multiplier_fractions("fibonacci_extensions", 0), ()
+            get_take_profit_stage_natr_multiplier_fractions("fibonacci_retracements", 0), ()
         )
         assert_allclose(
-            get_take_profit_stage_natr_multiplier_fractions("fibonacci_extensions", 1),
+            get_take_profit_stage_natr_multiplier_fractions("fibonacci_retracements", 1),
             (0.618033988749895,),
             rtol=1e-14,
         )
 
-    def test_a_degenerate_ladder_base_is_refused_by_name(self):
-        from Utils import _TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_BASES
-
-        for name, base in (("zero", 0.0), ("unit", 1.0), ("near", 1.0 + 2**-52)):
-            with self.subTest(base=base):
-                _TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_BASES[name] = base
-                self.addCleanup(_TAKE_PROFIT_STAGE_NATR_MULTIPLIER_FRACTION_BASES.pop, name, None)
-                self.addCleanup(get_take_profit_stage_natr_multiplier_fractions.cache_clear)
-                with self.assertRaises(ValueError) as raised:
-                    get_take_profit_stage_natr_multiplier_fractions(name, 3)
-                self.assertIn(name, str(raised.exception))
-
     def test_an_underflowing_ladder_is_refused(self):
-        # pi**-650 is the smallest positive subnormal; pi**-651 underflows to 0.0.
-        fractions = get_take_profit_stage_natr_multiplier_fractions("pi_extensions", 650)
-        self.assertEqual(len(fractions), 650)
-        self.assertEqual(fractions[0], math.ulp(0.0))
+        # For a large enough rung count the geometric rungs underflow to zero;
+        # the first such count is refused, one rung short nothing underflows.
+        base = (1.0 + math.sqrt(5.0)) / 2.0
+        underflowing = next(k for k in range(1, 10000) if base**-k <= 0.0)
+        fractions = get_take_profit_stage_natr_multiplier_fractions(
+            "fibonacci_retracements", underflowing - 1
+        )
+        self.assertEqual(len(fractions), underflowing - 1)
+        self.assertGreater(fractions[0], 0.0)
         with self.assertRaises(ValueError):
-            get_take_profit_stage_natr_multiplier_fractions("pi_extensions", 651)
+            get_take_profit_stage_natr_multiplier_fractions("fibonacci_retracements", underflowing)
 
     def test_a_negative_partial_stage_count_is_rejected(self):
         with self.assertRaises(ValueError):
-            get_take_profit_stage_natr_multiplier_fractions("fibonacci_extensions", -1)
+            get_take_profit_stage_natr_multiplier_fractions("fibonacci_retracements", -1)
 
     def test_the_remaining_stake_share_grows_with_the_stage_index(self):
         # Shares apply to the stake still open, so each rung closes a larger
