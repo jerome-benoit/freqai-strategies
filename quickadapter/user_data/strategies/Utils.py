@@ -2360,6 +2360,8 @@ _GAUSSIAN_FILL_DENSITY_WARN: Final[float] = 0.1
 _WEIGHT_FILL_RADIUS_SIGMA_MULTIPLIER: Final[float] = 4.0
 # Minimum post-pivot slope count, also setting minimum pivot spacing (floor+1).
 _ZIGZAG_MIN_CONFIRMATION_SLOPES: Final[int] = 5
+# Maximum failed anchored slopes by inclusive observation count.
+_ZIGZAG_PERSISTENCE_LIMITS: Final[tuple[tuple[int, int], ...]] = ((7, 0), (10, 1), (12, 2))
 
 
 def _compute_pivot_kth_neighbor_distances(
@@ -4601,12 +4603,11 @@ def _zigzag(
                 min_slope=min_slope,
             )
 
-        # Short windows allow no failed anchored slopes through seven candles,
-        # one through ten, and two through twelve.
-        if n_slopes < 13:
-            allowed_failures = 0 if n_slopes < 8 else 1 if n_slopes < 11 else 2
-            if n_slopes - n_slopes_ok > allowed_failures:
-                return False
+        for max_slopes, allowed_failures in _ZIGZAG_PERSISTENCE_LIMITS:
+            if n_slopes <= max_slopes:
+                if n_slopes - n_slopes_ok > allowed_failures:
+                    return False
+                break
 
         slopes_ok_threshold = calculate_slopes_ok_threshold(candidate_pivot_pos)
 
