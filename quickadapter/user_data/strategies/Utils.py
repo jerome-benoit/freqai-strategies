@@ -2358,10 +2358,7 @@ _GAUSSIAN_FILL_DENSITY_WARN: Final[float] = 0.1
 # its bump. sqrt(2*ln(100))=3.0349 sigma contains every value above 1% of the
 # pivot peak; k=4 retains a rounding margin and truncates only below exp(-8).
 _WEIGHT_FILL_RADIUS_SIGMA_MULTIPLIER: Final[float] = 4.0
-# Pivot-confirmation candle floor, also pinning the minimum pivot spacing
-# (floor+1). A label-latency design choice, not a calibrated threshold.
-# The statistical guard is the volatility-adjusted ratio in
-# is_pivot_confirmed.
+# Minimum post-pivot slope count, also setting minimum pivot spacing (floor+1).
 _ZIGZAG_MIN_CONFIRMATION_SLOPES: Final[int] = 5
 
 
@@ -4595,19 +4592,23 @@ def _zigzag(
         if n_slopes < _ZIGZAG_MIN_CONFIRMATION_SLOPES:
             return False
 
-        slopes_ok: list[bool] = []
+        n_slopes_ok = 0
         for i in range(start_pos, end_pos):
-            slopes_ok.append(
-                get_slope_ok(
-                    pos=i,
-                    candidate_pivot_pos=candidate_pivot_pos,
-                    direction=direction,
-                    min_slope=min_slope,
-                )
+            n_slopes_ok += get_slope_ok(
+                pos=i,
+                candidate_pivot_pos=candidate_pivot_pos,
+                direction=direction,
+                min_slope=min_slope,
             )
 
+        # Short windows allow no failed anchored slopes through seven candles,
+        # one through ten, and two through twelve.
+        if n_slopes < 13:
+            allowed_failures = 0 if n_slopes < 8 else 1 if n_slopes < 11 else 2
+            if n_slopes - n_slopes_ok > allowed_failures:
+                return False
+
         slopes_ok_threshold = calculate_slopes_ok_threshold(candidate_pivot_pos)
-        n_slopes_ok = sum(slopes_ok)
 
         return (n_slopes_ok / n_slopes) >= slopes_ok_threshold
 

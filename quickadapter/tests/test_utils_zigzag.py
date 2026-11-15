@@ -27,7 +27,7 @@ from Utils import (
 LOGGER = logging.getLogger("test-utils-zigzag")
 
 # natr_period 5 keeps the ATR warm-up short enough that a 45-candle first leg still leaves
-# room for the five consecutive slopes the confirmation test demands.
+# room for the five anchored slopes the confirmation test requires.
 NATR_PERIOD = 5
 NATR_MULTIPLIER = 2.0
 PARAMS = {"natr_period": NATR_PERIOD, "natr_multiplier": NATR_MULTIPLIER}
@@ -119,6 +119,26 @@ def wiggly_closes() -> np.ndarray:
     rise = rise.copy()
     rise[WIGGLE_SLICE] -= WIGGLE_DEPTH
     return np.concatenate([fall, rise, decline])
+
+
+def persistence_frame(n_slopes: int, n_failures: int, direction: TrendDirection) -> pd.DataFrame:
+    """Keep one pivot candidate through mixed anchored slopes, then clear its amplitude gate."""
+    closes = np.concatenate(
+        [
+            price_path(*RISE_TO_PEAK),
+            np.full(n_failures, 160.1),
+            np.full(n_slopes - n_failures - 1, 159.9),
+            [145.0],
+        ]
+    )
+    frame = ohlcv_frame(closes)
+    # The wick holds the candidate while closes cross its anchor without replacing it.
+    frame.loc[44, "high"] = 164.0
+    if direction == TrendDirection.UP:
+        frame["open"] = 320.0 - frame["open"]
+        frame["close"] = 320.0 - frame["close"]
+        frame["high"], frame["low"] = 320.0 - frame["low"], 320.0 - frame["high"]
+    return frame
 
 
 def soft_extremum_oracle(values: np.ndarray, alpha: float) -> float:
@@ -433,6 +453,46 @@ class UtilsZigzagTest(QaTestCase):
         self.assertEqual(confirmed.indices, [0, 44])
         self.assertEqual(confirmed.directions, [TrendDirection.DOWN, TrendDirection.UP])
 
+    def test_mixed_anchored_slopes_require_short_window_persistence(self):
+        cases = (
+            (5, 0, True),
+            (5, 1, False),
+            (6, 1, False),
+            (7, 0, True),
+            (7, 1, False),
+            (8, 1, True),
+            (8, 2, False),
+            (10, 1, True),
+            (10, 2, False),
+            (11, 2, True),
+            (11, 3, False),
+            (12, 2, True),
+            (12, 3, False),
+            (13, 3, True),
+            (13, 4, False),
+        )
+        for direction in (TrendDirection.UP, TrendDirection.DOWN):
+            for n_slopes, n_failures, expected in cases:
+                with self.subTest(direction=direction, n_slopes=n_slopes, n_failures=n_failures):
+                    frame = persistence_frame(n_slopes, n_failures, direction)
+                    # Ten volatility observations permit a 10/13 agreement ratio.
+                    # Only the last candle clears amplitude; flat closes still count
+                    # as successful slopes when they remain beyond the pivot close.
+                    params = {"natr_period": 10, "natr_multiplier": 3.0}
+                    before = _zigzag(frame.iloc[:-1], **params)
+                    result = _zigzag(frame, **params)
+
+                    self.assertEqual(before.indices, [0])
+                    self.assertEqual(result.indices, [0, 44] if expected else [0])
+                    self.assertEqual(
+                        result.directions,
+                        [direction, -direction] if expected else [direction],
+                    )
+                    self.assertEqual(
+                        int(result.known_at_positions[44]),
+                        len(frame) - 1 if expected else len(frame),
+                    )
+
     def test_a_decline_below_the_amplitude_threshold_is_not_confirmed(self):
         rise = price_path(*RISE_TO_PEAK)
         # Both dips run eight declining candles, well past the five-slope minimum, so only
@@ -577,14 +637,14 @@ class UtilsZigzagTest(QaTestCase):
         self.assertTrue(np.all(np.diff(result.known_at_positions) >= 0))
         # Each pivot stamps its confirmation position over the rows it resolves, and never
         # over rows a later pivot has already stamped: 5 for the orientation candle (the
-        # ATR warm-up, which no earlier confirmation could undercut), then 34, 84 and
+        # ATR warm-up, which no earlier confirmation could undercut), then 37, 84 and
         # finally n for the tail the scan never resolved.
         n = len(frame)
         expected = np.concatenate(
             [
                 np.full(1, 5),
-                np.full(34, 34),
-                np.full(50, 84),
+                np.full(37, 37),
+                np.full(47, 84),
                 np.full(n - 85, n),
             ]
         )

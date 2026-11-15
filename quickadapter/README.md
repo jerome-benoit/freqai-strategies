@@ -268,6 +268,12 @@ Raw Zigzag direction is sparse (-1/0/+1). Smoothed direction can be zero outside
 the smoothing support or through cancellation. A flat series with no confirmed
 pivot does not provide usable labels merely because its target values are zero.
 
+Subsequent Zigzag pivots require a volatility-adjusted reversal and at least five
+close-price slopes, each measured from the candidate pivot in log-price space.
+The confirming share must meet the volatility-adjusted threshold (75%–95%).
+With 5–7 slopes, all must confirm; with 8–10, at most one may fail; with 11–12,
+at most two may fail. From 13 slopes onward, only the share threshold applies.
+
 The `extrema_direction`, `extrema_direction_smoothed`, `extrema_weight` and
 `extrema_weight_smoothed` diagnostics also appear in backtests. They are not model
 features. Missing diagnostics, including weights when weighting is disabled,
