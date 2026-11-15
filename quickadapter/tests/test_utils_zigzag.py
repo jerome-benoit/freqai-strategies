@@ -8,7 +8,6 @@ import pandas as pd
 from qa_support import QaTestCase, ohlcv_frame
 from Utils import (
     _LABEL_GENERATORS,
-    _ZIGZAG_CONFIRMATION_ALPHA,
     _ZIGZAG_MIN_CONFIRMATION_SLOPES,
     EXTREMA_COLUMN,
     LABEL_COLUMNS,
@@ -416,12 +415,10 @@ class UtilsZigzagTest(QaTestCase):
             [TrendDirection.DOWN, TrendDirection.UP, TrendDirection.DOWN],
         )
 
-    def test_the_confirmation_boundary_is_the_binomial_minimum(self):
-        # The test is a one-sided Binomial(0.5): with every slope in agreement the p-value
-        # is 2**-m, so m slopes confirm exactly when 2**-m <= alpha.
-        self.assertEqual(_ZIGZAG_CONFIRMATION_ALPHA, 0.05)
-        self.assertLessEqual(2.0**-_ZIGZAG_MIN_CONFIRMATION_SLOPES, _ZIGZAG_CONFIRMATION_ALPHA)
-        self.assertGreater(2.0 ** (1 - _ZIGZAG_MIN_CONFIRMATION_SLOPES), _ZIGZAG_CONFIRMATION_ALPHA)
+    def test_the_confirmation_boundary_is_the_sample_size_floor(self):
+        # Fewer than _ZIGZAG_MIN_CONFIRMATION_SLOPES post-pivot candles never
+        # confirm, even with unanimous agreement; reaching the floor with every
+        # slope agreeing does confirm.
         self.assertEqual(_ZIGZAG_MIN_CONFIRMATION_SLOPES, 5)
 
         rise = price_path(*RISE_TO_PEAK)
@@ -580,14 +577,14 @@ class UtilsZigzagTest(QaTestCase):
         self.assertTrue(np.all(np.diff(result.known_at_positions) >= 0))
         # Each pivot stamps its confirmation position over the rows it resolves, and never
         # over rows a later pivot has already stamped: 5 for the orientation candle (the
-        # ATR warm-up, which no earlier confirmation could undercut), then 37, 84 and
+        # ATR warm-up, which no earlier confirmation could undercut), then 34, 84 and
         # finally n for the tail the scan never resolved.
         n = len(frame)
         expected = np.concatenate(
             [
                 np.full(1, 5),
-                np.full(37, 37),
-                np.full(47, 84),
+                np.full(34, 34),
+                np.full(50, 84),
                 np.full(n - 85, n),
             ]
         )

@@ -2358,9 +2358,11 @@ _GAUSSIAN_FILL_DENSITY_WARN: Final[float] = 0.1
 # its bump. sqrt(2*ln(100))=3.0349 sigma contains every value above 1% of the
 # pivot peak; k=4 retains a rounding margin and truncates only below exp(-8).
 _WEIGHT_FILL_RADIUS_SIGMA_MULTIPLIER: Final[float] = 4.0
-_ZIGZAG_CONFIRMATION_ALPHA: Final[float] = 0.05
-# With all slopes successful, the one-sided Binomial(0.5) p-value is 2**-m.
-_ZIGZAG_MIN_CONFIRMATION_SLOPES: Final[int] = math.ceil(-math.log2(_ZIGZAG_CONFIRMATION_ALPHA))
+# Pivot-confirmation candle floor, also pinning the minimum pivot spacing
+# (floor+1). A label-latency design choice, not a calibrated threshold.
+# The statistical guard is the volatility-adjusted ratio in
+# is_pivot_confirmed.
+_ZIGZAG_MIN_CONFIRMATION_SLOPES: Final[int] = 5
 
 
 def _compute_pivot_kth_neighbor_distances(
@@ -4585,13 +4587,12 @@ def _zigzag(
         candidate_pivot_pos: int,
         direction: TrendDirection,
         min_slope: float = np.finfo(float).eps,
-        alpha: float = _ZIGZAG_CONFIRMATION_ALPHA,
     ) -> bool:
         start_pos = min(candidate_pivot_pos + 1, n)
         end_pos = min(pos + 1, n)
         n_slopes = max(0, end_pos - start_pos)
 
-        if n_slopes < 1:
+        if n_slopes < _ZIGZAG_MIN_CONFIRMATION_SLOPES:
             return False
 
         slopes_ok: list[bool] = []
@@ -4607,9 +4608,8 @@ def _zigzag(
 
         slopes_ok_threshold = calculate_slopes_ok_threshold(candidate_pivot_pos)
         n_slopes_ok = sum(slopes_ok)
-        binomtest = sp.stats.binomtest(k=n_slopes_ok, n=n_slopes, p=0.5, alternative="greater")
 
-        return binomtest.pvalue <= alpha and (n_slopes_ok / n_slopes) >= slopes_ok_threshold
+        return (n_slopes_ok / n_slopes) >= slopes_ok_threshold
 
     start_pos = 0
     initial_high_pos = start_pos
